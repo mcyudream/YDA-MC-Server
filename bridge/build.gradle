@@ -1,0 +1,12 @@
+allprojects {
+    group = project_group
+    version = project_version
+}
+
+subprojects {
+    plugins.withId('java') {
+        tasks.withType(JavaCompile).configureEach {
+            options.encoding = 'UTF-8'
+        }
+    }
+}

@@ -6,4 +6,7 @@ target/
 mods/**/build/
 mods/**/run/
 mods/.gradle/
+bridge/**/build/
+bridge/**/run/
+bridge/.gradle/
 .gradle/

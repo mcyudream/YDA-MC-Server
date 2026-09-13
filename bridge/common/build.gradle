@@ -1,0 +1,24 @@
+plugins {
+    id 'java-library'
+}
+
+// The shared bridge core. It has no platform dependency at all: no Bukkit, no Velocity, no
+// Minecraft, no third-party JSON or HTTP library. The Velocity plugin and the Fabric mod both
+// compile these sources straight into their own jar through a srcDir include, which keeps each
+// artifact self-contained without shading or jar-in-jar.
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}
+
+test {
+    useJUnit()
+}

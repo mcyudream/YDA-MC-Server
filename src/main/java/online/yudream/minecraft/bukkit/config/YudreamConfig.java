@@ -29,6 +29,7 @@ public final class YudreamConfig {
     private final boolean syncOnlineOnEnable;
     private final boolean reportQuitOnDisable;
     private final long flushTimeoutMs;
+    private final DownstreamOptions downstream;
 
     private YudreamConfig(boolean enabled,
                           String baseUrl,
@@ -53,7 +54,8 @@ public final class YudreamConfig {
                           boolean resetOnInteract,
                           boolean syncOnlineOnEnable,
                           boolean reportQuitOnDisable,
-                          long flushTimeoutMs) {
+                          long flushTimeoutMs,
+                          DownstreamOptions downstream) {
         this.enabled = enabled;
         this.baseUrl = baseUrl;
         this.serverId = serverId;
@@ -78,6 +80,7 @@ public final class YudreamConfig {
         this.syncOnlineOnEnable = syncOnlineOnEnable;
         this.reportQuitOnDisable = reportQuitOnDisable;
         this.flushTimeoutMs = flushTimeoutMs;
+        this.downstream = downstream == null ? DownstreamOptions.defaults() : downstream;
     }
 
     public static YudreamConfig load(JavaPlugin plugin) {
@@ -107,7 +110,8 @@ public final class YudreamConfig {
                 config.getBoolean("afk.reset-on-interact", true),
                 config.getBoolean("startup.sync-online-on-enable", true),
                 config.getBoolean("shutdown.report-quit-on-disable", false),
-                positive(config.getLong("shutdown.flush-timeout-ms", 5000L), 5000L)
+                positive(config.getLong("shutdown.flush-timeout-ms", 5000L), 5000L),
+                DownstreamOptions.load(config)
         );
     }
 
@@ -229,5 +233,14 @@ public final class YudreamConfig {
 
     public long getFlushTimeoutMs() {
         return flushTimeoutMs;
+    }
+
+    /** Mode selection and the knobs that only matter when this server sits behind a proxy. */
+    public DownstreamOptions getDownstream() {
+        return downstream;
+    }
+
+    public boolean isDownstream() {
+        return downstream.isDownstream();
     }
 }

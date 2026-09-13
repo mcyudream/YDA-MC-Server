@@ -4,19 +4,31 @@ Reports Minecraft player activity to the YuDream Admin `minecraft-server` plugin
 
 将 Minecraft 玩家活动上报到 YuDream Admin 的 `minecraft-server` 插件。
 
-This repository contains three artifacts that share the same remote API:
+This repository contains five artifacts that share the same remote API:
 
-本仓库包含三个产物，共用同一套远程 API：
+本仓库包含五个产物，共用同一套远程 API：
 
 | Artifact / 产物 | Platform / 平台 | Target / 目标 |
 |---|---|---|
-| `yudream-minecraft-server-bukkit` | Bukkit / Spigot / Paper plugin | Compiled against Spigot 1.12.2 API, Java 8; runs on 1.8.8+ |
+| `yudream-minecraft-server-bukkit` | Bukkit / Spigot / Paper plugin | Compiled against Spigot 1.12.2 API, Java 8; runs on 1.8.8+. Two modes: standalone or proxy backend sensor |
 | `yudream_minecraft_server-forge-1.20.1` | Forge dedicated-server mod | Minecraft 1.20.1, Java 17 |
 | `yudream_minecraft_server-neoforge-1.21.1` | NeoForge dedicated-server mod | Minecraft 1.21.1, Java 21 |
+| `yudream-velocity` | Velocity proxy plugin | Velocity 3.5.x, Java 21 |
+| `yudream_minecraft_server-fabric-26.2` | Fabric dedicated-server mod | Minecraft 26.2, Java 25 |
 
 The bridge reports join, quit, AFK start/end, and a full online-player snapshot.
 
 桥接会上报进服、退服、开始挂机、结束挂机，以及完整在线玩家快照。
+
+The Bukkit plugin and the Forge/NeoForge mods each serve a single server on their own, and the Bukkit
+plugin can also join the proxy architecture as a sensor. The Velocity + Fabric pair is a separate
+deployment shape for proxy networks: the proxy plugin uploads, the backend sensors only forward
+activity, and `target.server` selects which downstream server is reported.
+See [`bridge/README.md`](bridge/README.md).
+
+Bukkit 插件与 Forge/NeoForge 模组各自服务于单台服务器，其中 Bukkit 插件也能作为传感器加入代理架构。
+Velocity + Fabric 是面向代理网络的另一种部署形态：由代理插件负责上报，后端传感器只转发玩家活动，
+`target.server` 决定上报哪一台下游服务器。详见 [`bridge/README.md`](bridge/README.md)。
 
 ## License / 许可证
 
@@ -101,6 +113,24 @@ On Paper 1.19/1.20+, the plugin also registers Paper's modern `AsyncChatEvent` w
 
 在 Paper 1.19/1.20+ 上，若存在 Paper 的 `AsyncChatEvent` 也会注册，同时保留旧版 Bukkit 聊天事件以兼容更早的服务端。
 
+### Modes / 两种模式
+
+`config.yml` 的 `mode` 决定这个插件干什么，运行期可用 `/yudreammc mode <standalone|downstream>` 切换并写回配置文件。
+
+| Mode | Behaviour |
+|---|---|
+| `standalone` (default) | The historical behaviour. This server talks to YuDream Admin itself; nothing else is required. |
+| `downstream` | This server sits behind a Velocity/BungeeCord proxy. The plugin becomes a sensor: it forwards player activity to the proxy over the `yudream:bridge` plugin message channel and uploads nothing itself. The proxy owns presence, AFK state and every HTTP call, and picks the reported downstream server with its own `target.server`. |
+
+| 模式 | 行为 |
+|---|---|
+| `standalone`（默认） | 与历史行为完全一致：本机直接上报 YuDream Admin，不需要其它组件。 |
+| `downstream` | 本机位于 Velocity/BungeeCord 代理之后。插件变成传感器：通过 `yudream:bridge` 插件消息通道把玩家活动转发给代理，自己不上传任何东西。在线状态、挂机判定与全部 HTTP 调用都由代理负责，上报的是哪台下游服务器由代理侧的 `target.server` 决定。 |
+
+下游模式与 Fabric 传感器完全对称——代理无法自行看到聊天、移动与交互，所以这些信号必须由后端提供；而进服/退服始终以代理自己的连接事件为准。插件消息层与代理实现无关，Velocity 与 BungeeCord/Waterfall 走同一套 `sendPluginMessage`。
+
+`downstream.fallback-to-api` 默认关闭：代理是唯一上报方，后端不持有 API Key。打开后，代理在 `downstream.ack-timeout-seconds` 内没有确认时，本机会自己直报 Admin（需要同时填好 `base-url`/`server-id`/`api-key`）；代理恢复期间两边可能重复上报，需要 Admin 端容忍。
+
 ### Build / 构建
 
 ```bash
@@ -153,7 +183,8 @@ Outputs:
 
 ## Commands / 命令
 
+- `/yudreammc mode [standalone|downstream]` switches mode, saves it to `config.yml`, and reconfigures everything. / 切换模式，写回 `config.yml` 并重新配置。
 - `/yudreammc reload` reloads config. / 重新加载配置。
-- `/yudreammc status` calls the remote players API. / 调用远程玩家接口。
-- `/yudreammc sync` reports join events for all currently online players. / 为当前在线玩家补报进服事件。
+- `/yudreammc status` shows the mode and link state; in standalone mode it calls the remote players API. / 显示模式与链路状态；独立模式下调用远程玩家接口。
+- `/yudreammc sync` reports join events for all currently online players, or asks the proxy to re-announce them in downstream mode. / 为当前在线玩家补报进服事件；下游模式下改为请求代理重新通报。
 - `/yudreammc queue` shows pending report queue size. / 显示待上报队列长度。

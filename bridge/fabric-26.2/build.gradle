@@ -1,0 +1,99 @@
+plugins {
+    id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+base {
+    archivesName = "${mod_id}-fabric-${minecraft_version}"
+}
+
+// Minecraft 26.2 requires Java 25.
+java {
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+}
+
+// The shared bridge core is compiled straight into this jar, the same convention mods/* uses.
+sourceSets.main.java.srcDir project(':common').file('src/main/java')
+
+// Minecraft 26.2 ships unobfuscated, so Loom 1.17 needs no mappings declaration here.
+dependencies {
+    minecraft "com.mojang:minecraft:${minecraft_version}"
+    implementation "net.fabricmc:fabric-loader:${loader_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
+}
+
+// No run configs: this is a dedicated-server sensor and is tested by dropping the jar into a server.
+
+processResources {
+    def replaceProperties = [
+            mod_id         : mod_id,
+            mod_name       : mod_name,
+            mod_license    : mod_license,
+            mod_version    : project.version,
+            mod_authors    : mod_authors,
+            mod_description: mod_description,
+            minecraft_version: minecraft_version,
+            loader_version : loader_version
+    ]
+    inputs.properties replaceProperties
+    filesMatching('fabric.mod.json') {
+        expand replaceProperties
+    }
+}
+
+// Fabric Loader requires a specific interface per entrypoint key, and getting it wrong is invisible
+// at compile time: the jar builds fine and then the server dies with a LanguageAdapterException at
+// startup. This check turns that runtime failure into a build failure.
+tasks.register('verifyEntrypoints') {
+    group = 'verification'
+    description = 'Fails the build when a fabric.mod.json entrypoint uses the wrong initializer interface.'
+    dependsOn tasks.named('classes')
+
+    def descriptor = layout.buildDirectory.file('resources/main/fabric.mod.json')
+    def classesDir = sourceSets.main.output.classesDirs
+    def runtimeClasspath = sourceSets.main.runtimeClasspath
+    inputs.file(descriptor)
+    inputs.files(classesDir)
+
+    doLast {
+        def requiredInterface = [
+                'main'  : 'net.fabricmc.api.ModInitializer',
+                'server': 'net.fabricmc.api.DedicatedServerModInitializer',
+                'client': 'net.fabricmc.api.ClientModInitializer'
+        ]
+        def json = new groovy.json.JsonSlurper().parse(descriptor.get().asFile)
+        def urls = (runtimeClasspath.files + classesDir.files).collect { it.toURI().toURL() } as URL[]
+        def loader = new URLClassLoader(urls, (ClassLoader) null)
+        def problems = []
+        (json.entrypoints ?: [:]).each { key, entries ->
+            def expected = requiredInterface[key]
+            if (expected == null) {
+                return
+            }
+            entries.each { entry ->
+                def className = entry.toString().split('::')[0]
+                try {
+                    def actual = Class.forName(className, false, loader)
+                    def required = Class.forName(expected, false, loader)
+                    if (!required.isAssignableFrom(actual)) {
+                        problems << "entrypoint '$key' -> $className must implement $expected"
+                    }
+                } catch (ClassNotFoundException e) {
+                    problems << "entrypoint '$key' -> $className was not found in the built jar"
+                }
+            }
+        }
+        loader.close()
+        if (!problems.isEmpty()) {
+            throw new GradleException('fabric.mod.json entrypoint mismatch:\n  ' + problems.join('\n  '))
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyEntrypoints')
+}

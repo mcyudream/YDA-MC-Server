@@ -2,6 +2,9 @@ package online.yudream.minecraft.bukkit.command;
 
 import online.yudream.minecraft.bukkit.YudreamMinecraftPlugin;
 import online.yudream.minecraft.bukkit.api.HttpResult;
+import online.yudream.minecraft.bukkit.bridge.BridgeMode;
+import online.yudream.minecraft.bukkit.bridge.DownstreamSensor;
+import online.yudream.minecraft.bukkit.config.YudreamConfig;
 import online.yudream.minecraft.bukkit.util.PlayerSummaryParser;
 import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
@@ -15,7 +18,7 @@ import java.util.List;
 
 public final class YudreamCommand implements CommandExecutor, TabCompleter {
 
-    private static final List<String> SUBCOMMANDS = Arrays.asList("reload", "status", "sync", "queue", "help");
+    private static final List<String> SUBCOMMANDS = Arrays.asList("reload", "status", "sync", "queue", "mode", "help");
 
     private final YudreamMinecraftPlugin plugin;
 
@@ -37,11 +40,17 @@ public final class YudreamCommand implements CommandExecutor, TabCompleter {
         }
         if ("sync".equals(subcommand)) {
             plugin.syncOnlinePlayers();
-            sender.sendMessage(prefix() + "Queued join reports for current online players.");
+            sender.sendMessage(prefix() + (plugin.isDownstreamMode()
+                    ? "Asked the proxy to re-announce the players on this backend."
+                    : "Queued join reports for current online players."));
             return true;
         }
         if ("queue".equals(subcommand)) {
             sender.sendMessage(prefix() + "Pending reports: " + plugin.getReportQueue().size());
+            return true;
+        }
+        if ("mode".equals(subcommand)) {
+            mode(sender, label, args);
             return true;
         }
         help(sender, label);
@@ -50,20 +59,71 @@ public final class YudreamCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (args.length != 1) {
-            return new ArrayList<String>();
+        if (args.length == 1) {
+            return matching(SUBCOMMANDS, args[0]);
         }
-        String prefix = args[0].toLowerCase();
+        if (args.length == 2 && "mode".equalsIgnoreCase(args[0])) {
+            return matching(Arrays.asList("standalone", "downstream"), args[1]);
+        }
+        return new ArrayList<String>();
+    }
+
+    private static List<String> matching(List<String> candidates, String partial) {
+        String prefix = partial == null ? "" : partial.toLowerCase();
         List<String> results = new ArrayList<String>();
-        for (String subcommand : SUBCOMMANDS) {
-            if (subcommand.startsWith(prefix)) {
-                results.add(subcommand);
+        for (String candidate : candidates) {
+            if (candidate.startsWith(prefix)) {
+                results.add(candidate);
             }
         }
         return results;
     }
 
+    private void mode(CommandSender sender, String label, String[] args) {
+        YudreamConfig settings = plugin.getSettings();
+        if (args.length < 2) {
+            sender.sendMessage(prefix() + "Mode: " + ChatColor.WHITE + settings.getDownstream().getMode().getId());
+            sender.sendMessage(prefix() + ChatColor.GRAY + "/" + label + " mode standalone|downstream");
+            return;
+        }
+        String raw = args[1].toLowerCase();
+        BridgeMode requested;
+        if ("standalone".equals(raw)) {
+            requested = BridgeMode.STANDALONE;
+        } else if ("downstream".equals(raw)) {
+            requested = BridgeMode.DOWNSTREAM;
+        } else {
+            sender.sendMessage(prefix() + ChatColor.RED + "Unknown mode '" + args[1] + "'. Use standalone or downstream.");
+            return;
+        }
+        if (!plugin.setMode(requested)) {
+            sender.sendMessage(prefix() + ChatColor.RED + "Could not write the mode to config.yml; see the console log.");
+            return;
+        }
+        sender.sendMessage(prefix() + "Mode set to " + ChatColor.WHITE + requested.getId() + ChatColor.RESET + " and saved to config.yml.");
+        if (requested.isDownstream()) {
+            sender.sendMessage(prefix() + ChatColor.GRAY
+                    + "This server now forwards player activity to the proxy and does not contact YuDream Admin directly"
+                    + (plugin.getSettings().getDownstream().isFallbackToApi() ? " unless the proxy stays silent." : "."));
+        } else {
+            sender.sendMessage(prefix() + ChatColor.GRAY + "This server now reports to YuDream Admin itself.");
+        }
+    }
+
     private void status(final CommandSender sender) {
+        YudreamConfig settings = plugin.getSettings();
+        sender.sendMessage(prefix() + "Mode: " + ChatColor.WHITE + settings.getDownstream().getMode().getId()
+                + ChatColor.RESET + " (" + (settings.isEnabled() ? "enabled" : "disabled") + ")");
+
+        if (settings.isDownstream()) {
+            DownstreamSensor sensor = plugin.getSensor();
+            sender.sendMessage(prefix() + "Proxy link: " + ChatColor.GRAY
+                    + (sensor == null ? "sensor not started" : sensor.describeLink()));
+            sender.sendMessage(prefix() + "Local reporting: " + ChatColor.GRAY + localReportingState(settings));
+            sender.sendMessage(prefix() + "Queue: " + plugin.getReportQueue().size());
+            return;
+        }
+
         if (!plugin.canReport()) {
             sender.sendMessage(prefix() + ChatColor.RED + "Not configured or disabled.");
             return;
@@ -99,7 +159,15 @@ public final class YudreamCommand implements CommandExecutor, TabCompleter {
         });
     }
 
+    private String localReportingState(YudreamConfig settings) {
+        if (!settings.getDownstream().isFallbackToApi()) {
+            return "disabled (the proxy is the only uploader)";
+        }
+        return plugin.canReport() ? "active, proxy unreachable" : "armed, proxy reachable";
+    }
+
     private void help(CommandSender sender, String label) {
+        sender.sendMessage(prefix() + "/" + label + " mode [standalone|downstream]");
         sender.sendMessage(prefix() + "/" + label + " reload");
         sender.sendMessage(prefix() + "/" + label + " status");
         sender.sendMessage(prefix() + "/" + label + " sync");

@@ -1,4 +1,17 @@
+# How this server reports player activity.
+#
+#   standalone - this server talks to YuDream Admin itself. Nothing else is needed.
+#   downstream - this server sits behind a Velocity/BungeeCord proxy. The plugin becomes a sensor:
+#                it forwards player activity to the proxy over the "yudream:bridge" plugin message
+#                channel and uploads nothing to YuDream Admin itself, exactly like the Fabric sensor
+#                does for Fabric backends. The proxy plugin owns presence, AFK and every HTTP call,
+#                and picks the reported downstream server with its own target.server setting.
+#
+# Switch at runtime with /yudreammc mode <standalone|downstream>; the new value is written back here.
+mode: standalone
+
 # YuDream Admin base URL. Do not include a trailing slash.
+# Only used in standalone mode, or by the downstream fallback below.
 base-url: "http://127.0.0.1:8080"
 
 # Server id created in YuDream Admin minecraft-server plugin.
@@ -6,9 +19,26 @@ server-id: ""
 
 # API key with plugin:minecraft-server:report permission.
 # The status command also needs plugin:minecraft-server:manage.
+# Leave empty in downstream mode: the proxy holds the credentials.
 api-key: ""
 
 enabled: true
+
+# Settings that only apply when mode is downstream.
+downstream:
+  # Off by default: the proxy is meant to be the only uploader. When enabled, this server reports to
+  # YuDream Admin itself for as long as the proxy has not acknowledged, which needs base-url,
+  # server-id and api-key to be filled in above. While the fallback is active the sensor keeps
+  # talking to the proxy as well, so a proxy that comes back during the overlap can double-report.
+  fallback-to-api: false
+  # How long the proxy may stay silent before the fallback takes over.
+  ack-timeout-seconds: 90
+  # How often the sensor re-announces itself to the proxy while players are online. The proxy needs
+  # this to survive a restart while players were already connected to this backend.
+  heartbeat-seconds: 20
+  # Shortest gap between two forwarded activity signals for the same player. Activity only resets an
+  # AFK timer measured in minutes, so forwarding every chat line or step would be packet spam.
+  activity-min-interval-seconds: 10
 
 http:
   connect-timeout-ms: 5000
@@ -38,6 +68,7 @@ afk:
 
 startup:
   # Useful after /reload: players already online are reported again.
+  # In downstream mode this asks the proxy to re-announce them instead.
   sync-online-on-enable: true
 
 shutdown:

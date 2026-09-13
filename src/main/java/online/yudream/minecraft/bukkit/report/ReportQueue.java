@@ -18,17 +18,35 @@ import java.util.List;
 
 public final class ReportQueue {
 
+    /**
+     * An extra check applied before anything is queued, on top of the enabled/configured pair.
+     *
+     * <p>Declared explicitly so a background producer — the AFK tracker, the snapshot task, the
+     * shutdown path — cannot bypass a mode decision it has no way of seeing. Without it, a server in
+     * downstream mode would keep uploading to YuDream Admin through the AFK timer even though the
+     * proxy is supposed to be the only uploader.
+     */
+    public interface ReportGate {
+        boolean canReport();
+    }
+
     private final JavaPlugin plugin;
     private final YudreamApiClient client;
     private final YudreamConfig config;
+    private final ReportGate gate;
     private final BlockingQueue<ReportTask> queue;
     private final ExecutorService executor;
     private volatile boolean running = true;
 
     public ReportQueue(JavaPlugin plugin, YudreamApiClient client, YudreamConfig config) {
+        this(plugin, client, config, null);
+    }
+
+    public ReportQueue(JavaPlugin plugin, YudreamApiClient client, YudreamConfig config, ReportGate gate) {
         this.plugin = plugin;
         this.client = client;
         this.config = config;
+        this.gate = gate;
         this.queue = new ArrayBlockingQueue<ReportTask>(config.getQueueCapacity());
         this.executor = Executors.newSingleThreadExecutor(new ThreadFactory() {
             @Override
@@ -47,7 +65,7 @@ public final class ReportQueue {
     }
 
     public void submit(PlayerEventType type, PlayerEventPayload payload) {
-        if (!config.isEnabled() || !config.isConfigured()) {
+        if (!canSubmit()) {
             return;
         }
         ReportTask task = ReportTask.event(type, payload);
@@ -55,10 +73,17 @@ public final class ReportQueue {
     }
 
     public void submitSnapshot(Collection<PlayerEventPayload> players, long observedAt) {
-        if (!config.isEnabled() || !config.isConfigured()) {
+        if (!canSubmit()) {
             return;
         }
         enqueue(ReportTask.snapshot(players, observedAt));
+    }
+
+    private boolean canSubmit() {
+        if (!config.isEnabled() || !config.isConfigured()) {
+            return false;
+        }
+        return gate == null || gate.canReport();
     }
 
     private void enqueue(ReportTask task) {

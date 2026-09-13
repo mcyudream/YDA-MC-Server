@@ -1,6 +1,7 @@
 package online.yudream.minecraft.bukkit.compat;
 
 import online.yudream.minecraft.bukkit.YudreamMinecraftPlugin;
+import online.yudream.minecraft.bukkit.bridge.BridgeProtocol;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventException;
@@ -34,7 +35,9 @@ public final class PaperChatCompatibility {
         EventExecutor executor = new EventExecutor() {
             @Override
             public void execute(Listener listener, Event event) throws EventException {
-                if (!plugin.canReport() || !plugin.getSettings().isResetOnChat()) {
+                // Routed through the plugin rather than straight into the AFK tracker, so downstream
+                // mode forwards chat activity to the proxy like every other signal.
+                if (!plugin.getSettings().isResetOnChat()) {
                     return;
                 }
                 final Player player = player(event);
@@ -44,8 +47,8 @@ public final class PaperChatCompatibility {
                 plugin.getServer().getScheduler().runTask(plugin, new Runnable() {
                     @Override
                     public void run() {
-                        if (player.isOnline() && plugin.getAfkTracker() != null) {
-                            plugin.getAfkTracker().markActive(player);
+                        if (player.isOnline()) {
+                            plugin.handleActivity(player, BridgeProtocol.SOURCE_CHAT);
                         }
                     }
                 });

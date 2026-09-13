@@ -1,0 +1,55 @@
+// YuDream Minecraft bridge: Velocity plugin + Fabric sensor.
+//
+// Repository URLs are overridable without editing this file, matching mods/settings.gradle:
+//   $env:MAVEN_PUBLIC_MIRROR_URL, $env:MAVEN_CENTRAL_MIRROR_URL, $env:GRADLE_PLUGIN_MIRROR_URL,
+//   $env:PAPERMC_REPO_URL, $env:FABRIC_MAVEN_URL
+
+pluginManagement {
+    def resolveRepoUrl = { String propertyName, String envName, String fallback ->
+        def value = gradle.startParameter.projectProperties[propertyName]
+        if (value == null || value.trim().isEmpty()) {
+            value = System.getProperty(propertyName)
+        }
+        if (value == null || value.trim().isEmpty()) {
+            value = System.getenv(envName)
+        }
+        return uri((value == null || value.trim().isEmpty()) ? fallback : value)
+    }
+
+    repositories {
+        maven { url = resolveRepoUrl.call('gradlePluginMirrorUrl', 'GRADLE_PLUGIN_MIRROR_URL', 'https://maven.aliyun.com/repository/gradle-plugin') }
+        maven { url = resolveRepoUrl.call('mavenPublicMirrorUrl', 'MAVEN_PUBLIC_MIRROR_URL', 'https://maven.aliyun.com/repository/public') }
+        maven { url = resolveRepoUrl.call('fabricMavenUrl', 'FABRIC_MAVEN_URL', 'https://maven.fabricmc.net/') }
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    def resolveRepoUrl = { String propertyName, String envName, String fallback ->
+        def value = gradle.startParameter.projectProperties[propertyName]
+        if (value == null || value.trim().isEmpty()) {
+            value = System.getProperty(propertyName)
+        }
+        if (value == null || value.trim().isEmpty()) {
+            value = System.getenv(envName)
+        }
+        return uri((value == null || value.trim().isEmpty()) ? fallback : value)
+    }
+
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+    repositories {
+        mavenLocal()
+        maven { url = resolveRepoUrl.call('mavenPublicMirrorUrl', 'MAVEN_PUBLIC_MIRROR_URL', 'https://maven.aliyun.com/repository/public') }
+        maven { url = resolveRepoUrl.call('mavenCentralMirrorUrl', 'MAVEN_CENTRAL_MIRROR_URL', 'https://maven.aliyun.com/repository/central') }
+        maven { url = resolveRepoUrl.call('papermcRepoUrl', 'PAPERMC_REPO_URL', 'https://repo.papermc.io/repository/maven-public/') }
+        maven { url = resolveRepoUrl.call('fabricMavenUrl', 'FABRIC_MAVEN_URL', 'https://maven.fabricmc.net/') }
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'yudream-minecraft-server-bridge'
+
+include 'common'
+include 'velocity'
+include 'fabric262'
+project(':fabric262').projectDir = file('fabric-26.2')

@@ -33,7 +33,8 @@ public final class JsonObjects {
         return json.append("]}").toString();
     }
 
-    static String escape(String value) {
+    /** Escapes a Java string for embedding between JSON double quotes. */
+    public static String escape(String value) {
         if (value == null) {
             return "";
         }
