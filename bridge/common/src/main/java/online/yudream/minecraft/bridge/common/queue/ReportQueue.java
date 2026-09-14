@@ -6,6 +6,7 @@ import online.yudream.minecraft.bridge.common.http.YudreamApiClient;
 import online.yudream.minecraft.bridge.common.log.LogSink;
 import online.yudream.minecraft.bridge.common.model.PlayerEventPayload;
 import online.yudream.minecraft.bridge.common.model.PlayerEventType;
+import online.yudream.minecraft.bridge.common.model.SubServerRoster;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -103,6 +104,19 @@ public final class ReportQueue {
             return;
         }
         enqueue(ReportTask.snapshot(players, observedAt, serverName));
+    }
+
+    /**
+     * Queues a snapshot carrying one roster per sub-server.
+     *
+     * <p>The gate cannot judge a single sub-server here, so callers must already have filtered the
+     * rosters: only sub-servers whose sensor gate allows reporting belong in the list.
+     */
+    public void submitGroupedSnapshot(Collection<SubServerRoster> servers, long observedAt) {
+        if (servers == null || servers.isEmpty() || !canReport()) {
+            return;
+        }
+        enqueue(ReportTask.groupedSnapshot(servers, observedAt));
     }
 
     /** Number of reports still waiting to be sent. */
@@ -208,9 +222,14 @@ public final class ReportQueue {
                 if (settings.isLogAttempts()) {
                     log.info("Sending YuDream report: " + describe(task) + ", attempt=" + attempt + "/" + attempts);
                 }
-                HttpResult result = task.snapshot()
-                        ? client.snapshot(task.players(), task.observedAt(), task.serverName())
-                        : client.report(task.type(), task.payload());
+                HttpResult result;
+                if (!task.snapshot()) {
+                    result = client.report(task.type(), task.payload());
+                } else if (task.grouped()) {
+                    result = client.groupedSnapshot(task.servers(), task.observedAt());
+                } else {
+                    result = client.snapshot(task.players(), task.observedAt(), task.serverName());
+                }
                 long elapsedMs = System.currentTimeMillis() - startedAt;
                 if (result.isSuccess()) {
                     if (settings.isLogSuccess()) {

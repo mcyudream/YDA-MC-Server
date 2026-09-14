@@ -32,10 +32,19 @@ if (!(Test-Path $GradleBat)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($env:JAVA_HOME) -or !(Test-Path (Join-Path $env:JAVA_HOME 'bin\javac.exe'))) {
-    $candidates = @(
-        (Join-Path $PSScriptRoot '..\..\.toolchain\jdk25'),
-        (Join-Path $PSScriptRoot '..\..\.toolchain\jdk21')
-    ) + (Get-ChildItem "$env:USERPROFILE\.jdks", 'C:\Program Files\Java', 'C:\Program Files\Eclipse Adoptium' -Directory -ErrorAction SilentlyContinue |
+    $candidates = @()
+
+    # Walk up from this script and accept a .toolchain beside any ancestor. A fixed relative path
+    # would silently break whenever the checkout sits at a different depth, so search instead.
+    $dir = Get-Item $PSScriptRoot
+    while ($dir) {
+        $candidates += (Join-Path $dir.FullName '.toolchain\jdk25')
+        $candidates += (Join-Path $dir.FullName '.toolchain\jdk21')
+        $candidates += (Join-Path $dir.FullName 'jdk25')
+        $dir = $dir.Parent
+    }
+
+    $candidates += (Get-ChildItem "$env:USERPROFILE\.jdks", 'C:\Program Files\Java', 'C:\Program Files\Eclipse Adoptium' -Directory -ErrorAction SilentlyContinue |
             Sort-Object Name -Descending | ForEach-Object { $_.FullName })
 
     $resolved = $null

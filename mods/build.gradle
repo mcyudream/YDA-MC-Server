@@ -15,7 +15,7 @@ def resolveRepoUrl = { String propertyName, String envName, String fallback ->
 
 allprojects {
     group = 'online.yudream.minecraft'
-    version = '1.0.0'
+    version = mod_version
 
     repositories {
         mavenLocal()

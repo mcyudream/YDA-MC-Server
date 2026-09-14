@@ -1,7 +1,9 @@
 package online.yudream.minecraft.bridge.fabric;
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
@@ -18,6 +20,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
+import online.yudream.minecraft.bridge.common.config.BridgeMode;
 import online.yudream.minecraft.bridge.common.model.PlayerIdentity;
 import online.yudream.minecraft.bridge.common.protocol.BridgeMessage;
 import online.yudream.minecraft.bridge.common.protocol.BridgeProtocol;
@@ -25,25 +28,32 @@ import online.yudream.minecraft.bridge.common.protocol.ProtocolException;
 import online.yudream.minecraft.bridge.fabric.config.FabricSettings;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 /**
- * The Minecraft-facing half of the sensor.
+ * The Minecraft-facing half of the bridge, in whichever mode the config selects.
  *
- * <p>It watches this backend's players and forwards two things to the proxy:
+ * <p>It watches this server's players. Where that observation goes depends on the mode:
  *
  * <ul>
- *   <li><b>hello</b> — on every player join, on a heartbeat, and whenever the proxy probes. A hello
- *       is the only way the proxy can confirm that this backend actually runs the mod, because
- *       plugin messages need a player connection to travel over.</li>
- *   <li><b>activity</b> — chat, movement, interactions and commands, throttled per player. Activity
- *       never carries presence: the proxy decides who is online.</li>
+ *   <li><b>downstream</b> — two things travel to the proxy over {@code yudream:bridge}:
+ *       <ul>
+ *         <li><b>hello</b> — on every player join, on a heartbeat, and whenever the proxy probes. A
+ *             hello is the only way the proxy can confirm that this backend actually runs the mod,
+ *             because plugin messages need a player connection to travel over.</li>
+ *         <li><b>activity</b> — chat, movement, interactions and commands, throttled per player.
+ *             Activity never carries presence: the proxy decides who is online.</li>
+ *       </ul></li>
+ *   <li><b>standalone</b> — there is no proxy, so the same signals feed {@link FabricReporter},
+ *       which owns presence, AFK state and every HTTP call to YuDream Admin.</li>
  * </ul>
  *
- * <p>Nothing here contacts YuDream Admin and there are no credentials on this server.
+ * <p>Only the shared, mode-independent observation lives here: movement detection and the activity
+ * throttle. Everything downstream of that is one call into either the channel or the reporter.
  */
 public final class FabricSensor {
 
@@ -52,16 +62,22 @@ public final class FabricSensor {
     private final Map<UUID, Long> lastActivityForwardedAt = new HashMap<UUID, Long>();
 
     private volatile long lastHeartbeatAt;
+    private volatile long lastAfkTickAt;
+    private volatile long lastSnapshotAt;
+    /** Set until the first tick has run {@code startup.sync-online-on-enable} once. */
+    private volatile boolean startupSyncPending = true;
 
     public FabricSensor(FabricBridge bridge) {
         this.bridge = bridge;
     }
 
     public void install() {
-        PayloadTypeRegistry.clientboundPlay().register(BridgePayload.TYPE, BridgePayload.CODEC);
-        PayloadTypeRegistry.serverboundPlay().register(BridgePayload.TYPE, BridgePayload.CODEC);
-
-        ServerPlayNetworking.registerGlobalReceiver(BridgePayload.TYPE, this::onPayload);
+        if (bridge.settings().isDownstream()) {
+            installProxyChannel();
+        } else {
+            FabricLog.LOGGER.info("YuDream bridge runs standalone: no proxy channel is registered, so"
+                    + " vanilla clients are never sent a payload they cannot handle.");
+        }
 
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             ServerPlayer player = handler.getPlayer();
@@ -82,15 +98,14 @@ public final class FabricSensor {
             if (server.getPlayerList().getPlayer(uuid) == null) {
                 return;
             }
-            // Advisory only: the proxy owns presence and will already have reported the quit.
-            forward(player, BridgeMessage.KIND_QUIT, null);
+            onPlayerQuit(player);
         });
 
         ServerTickEvents.END_SERVER_TICK.register(this::onEndTick);
 
         ServerMessageEvents.CHAT_MESSAGE.register((message, sender, bound) -> {
             if (bridge.settings().isActivityChat()) {
-                forwardActivity(sender, BridgeMessage.SOURCE_CHAT);
+                markActivity(sender, BridgeMessage.SOURCE_CHAT);
             }
         });
         ServerMessageEvents.COMMAND_MESSAGE.register((message, source, bound) -> {
@@ -99,7 +114,7 @@ public final class FabricSensor {
             }
             ServerPlayer player = source.getPlayer();
             if (player != null) {
-                forwardActivity(player, BridgeMessage.SOURCE_COMMAND);
+                markActivity(player, BridgeMessage.SOURCE_COMMAND);
             }
         });
 
@@ -116,10 +131,18 @@ public final class FabricSensor {
             return InteractionResult.PASS;
         });
 
+        ServerLifecycleEvents.SERVER_STOPPING.register(this::onServerStopping);
+
         CommandRegistrationCallback.EVENT.register((dispatcher, registry, selection) -> registerCommands(dispatcher));
 
-        FabricLog.LOGGER.info("YuDream sensor installed; player activity is forwarded to the Velocity proxy on {}.",
-                BridgeProtocol.CHANNEL);
+        FabricLog.LOGGER.info("YuDream bridge installed in {} mode.", bridge.settings().mode().getId());
+    }
+
+    /** Registers the {@code yudream:bridge} payload, which only a proxy deployment uses. */
+    private void installProxyChannel() {
+        PayloadTypeRegistry.clientboundPlay().register(BridgePayload.TYPE, BridgePayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(BridgePayload.TYPE, BridgePayload.CODEC);
+        ServerPlayNetworking.registerGlobalReceiver(BridgePayload.TYPE, this::onPayload);
     }
 
     // ------------------------------------------------------------------ incoming
@@ -157,10 +180,33 @@ public final class FabricSensor {
             return;
         }
         lastPositions.put(player.getUUID(), player.blockPosition());
+
+        FabricReporter reporter = bridge.reporter();
+        if (reporter != null) {
+            reporter.join(identity(player), System.currentTimeMillis());
+            return;
+        }
         // Announce this backend immediately, then report the join itself.
         sendHello(player, server);
         lastHeartbeatAt = System.currentTimeMillis();
         forward(player, BridgeMessage.KIND_JOIN, null);
+    }
+
+    private void onPlayerQuit(ServerPlayer player) {
+        FabricReporter reporter = bridge.reporter();
+        if (reporter != null) {
+            reporter.quit(identity(player), System.currentTimeMillis());
+            return;
+        }
+        // Advisory only: the proxy owns presence and will already have reported the quit.
+        forward(player, BridgeMessage.KIND_QUIT, null);
+    }
+
+    private void onServerStopping(MinecraftServer server) {
+        FabricReporter reporter = bridge.reporter();
+        if (reporter != null) {
+            reporter.shutdown(identities(server.getPlayerList().getPlayers()));
+        }
     }
 
     private void onEndTick(MinecraftServer server) {
@@ -169,20 +215,80 @@ public final class FabricSensor {
             return;
         }
         List<ServerPlayer> players = server.getPlayerList().getPlayers();
+        long now = System.currentTimeMillis();
+
+        FabricReporter reporter = bridge.reporter();
+        if (reporter != null) {
+            tickStandalone(reporter, players, now);
+        } else {
+            tickDownstream(server, players, now);
+        }
+    }
+
+    /**
+     * Standalone cadence: movement feeds the local AFK timer, and the roster is re-reported on an
+     * interval.
+     *
+     * <p>This runs even with nobody online. An empty roster is a real report — it is how Admin learns
+     * that the last player left or that a quit was missed while this server was unreachable — so it
+     * must not be skipped just because the player list is empty.
+     */
+    private void tickStandalone(FabricReporter reporter, List<ServerPlayer> players, long now) {
+        FabricSettings settings = bridge.settings();
+        if (startupSyncPending) {
+            startupSyncPending = false;
+            // The first tick reports the roster exactly once and starts the cadence from there.
+            // Without this, an unset lastSnapshotAt makes the cadence fire in the same tick as the
+            // startup sync and two identical snapshots go out back to back.
+            lastSnapshotAt = now;
+            lastAfkTickAt = now;
+            if (settings.bridge().isSyncOnlineOnEnable()) {
+                reporter.syncOnline(identities(players), now);
+            } else {
+                reporter.reportSnapshot(identities(players), now);
+            }
+        }
+        if (!players.isEmpty()) {
+            trackMovement(players, settings, now);
+        }
+        long afkIntervalMs = Math.max(settings.bridge().getAfkCheckIntervalMs(), 1000L);
+        if (now - lastAfkTickAt >= afkIntervalMs) {
+            lastAfkTickAt = now;
+            reporter.tickAfk(identities(players), now);
+        }
+        if (now - lastSnapshotAt >= settings.snapshotIntervalSeconds() * 1000L) {
+            lastSnapshotAt = now;
+            reporter.reportSnapshot(identities(players), now);
+        }
+    }
+
+    /**
+     * Downstream cadence: movement is forwarded to the proxy, which owns the AFK clock, plus the
+     * heartbeat that keeps the proxy's sensor confirmation alive across a proxy restart.
+     */
+    private void tickDownstream(MinecraftServer server, List<ServerPlayer> players, long now) {
         if (players.isEmpty()) {
+            return;
+        }
+        FabricSettings settings = bridge.settings();
+        trackMovement(players, settings, now);
+        if (now - lastHeartbeatAt >= settings.heartbeatSeconds() * 1000L) {
+            lastHeartbeatAt = now;
+            sendHello(players.get(0), server);
+        }
+    }
+
+    /** Emits one activity signal per player that moved far enough since the previous tick. */
+    private void trackMovement(List<ServerPlayer> players, FabricSettings settings, long now) {
+        if (!settings.isActivityMove()) {
             return;
         }
         for (ServerPlayer player : players) {
             BlockPos current = player.blockPosition();
             BlockPos previous = lastPositions.put(player.getUUID(), current);
-            if (previous != null && settings.isActivityMove() && movedEnough(previous, current, settings.moveMinBlocks())) {
-                forwardActivity(player, BridgeMessage.SOURCE_MOVE);
+            if (previous != null && movedEnough(previous, current, settings.moveMinBlocks())) {
+                emitActivity(player, BridgeMessage.SOURCE_MOVE, now);
             }
-        }
-        long now = System.currentTimeMillis();
-        if (now - lastHeartbeatAt >= settings.heartbeatSeconds() * 1000L) {
-            lastHeartbeatAt = now;
-            sendHello(players.get(0), server);
         }
     }
 
@@ -202,16 +308,16 @@ public final class FabricSensor {
             return;
         }
         if (player instanceof ServerPlayer serverPlayer) {
-            forwardActivity(serverPlayer, BridgeMessage.SOURCE_INTERACT);
+            markActivity(serverPlayer, BridgeMessage.SOURCE_INTERACT);
         }
     }
 
     /**
-     * Forwards one activity signal, at most once per player per
-     * {@code activity.min-interval-seconds}. The proxy only needs this to reset an AFK timer that is
+     * Routes one activity signal, at most once per player per
+     * {@code activity.min-interval-seconds}. Both modes only need this to reset an AFK timer that is
      * measured in minutes, so sending every chat line or every step would be pure packet spam.
      */
-    private void forwardActivity(ServerPlayer player, String source) {
+    private void markActivity(ServerPlayer player, String source) {
         FabricSettings settings = bridge.settings();
         if (!settings.isEnabled()) {
             return;
@@ -222,6 +328,15 @@ public final class FabricSensor {
             return;
         }
         lastActivityForwardedAt.put(player.getUUID(), Long.valueOf(now));
+        emitActivity(player, source, now);
+    }
+
+    private void emitActivity(ServerPlayer player, String source, long now) {
+        FabricReporter reporter = bridge.reporter();
+        if (reporter != null) {
+            reporter.activity(identity(player), now);
+            return;
+        }
         send(player, new BridgeMessage.Event("", BridgeMessage.KIND_ACTIVITY, source, identity(player), now));
     }
 
@@ -249,6 +364,14 @@ public final class FabricSensor {
         return dx * dx + dy * dy + dz * dz >= minBlocks * minBlocks;
     }
 
+    private static List<PlayerIdentity> identities(Collection<ServerPlayer> players) {
+        List<PlayerIdentity> result = new ArrayList<PlayerIdentity>();
+        for (ServerPlayer player : players) {
+            result.add(identity(player));
+        }
+        return result;
+    }
+
     private static PlayerIdentity identity(ServerPlayer player) {
         return new PlayerIdentity(player.getUUID(), player.getName().getString());
     }
@@ -260,14 +383,68 @@ public final class FabricSensor {
                 .requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
                 .then(Commands.literal("status").executes(context -> {
                     CommandSourceStack source = context.getSource();
-                    source.sendSuccess(() -> Component.literal(bridge.describeProxyLink()), false);
+                    source.sendSuccess(() -> Component.literal(bridge.describeStatus()), false);
                     return 1;
                 }))
                 .then(Commands.literal("reload").executes(context -> {
                     bridge.reload();
-                    context.getSource().sendSuccess(
-                            () -> Component.literal("YuDream sensor config reloaded."), false);
+                    CommandSourceStack source = context.getSource();
+                    MinecraftServer server = source.getServer();
+                    FabricReporter reporter = bridge.reporter();
+                    if (reporter != null && bridge.settings().bridge().isSyncOnlineOnEnable()) {
+                        // Re-announce whoever is online: a reload can change who is responsible for
+                        // reporting, and Admin should not have to wait for the next join.
+                        reporter.syncOnline(identities(server.getPlayerList().getPlayers()),
+                                System.currentTimeMillis());
+                    }
+                    source.sendSuccess(() -> Component.literal(
+                            "YuDream bridge config reloaded; mode=" + bridge.settings().mode().getId() + "."), false);
                     return 1;
-                })));
+                }))
+                .then(Commands.literal("mode")
+                        .then(Commands.argument("value", StringArgumentType.word())
+                                .suggests((context, builder) -> {
+                                    builder.suggest("standalone");
+                                    builder.suggest("downstream");
+                                    return builder.buildFuture();
+                                })
+                                .executes(context -> {
+                                    String raw = StringArgumentType.getString(context, "value");
+                                    BridgeMode requested = BridgeMode.fromId(raw, null);
+                                    CommandSourceStack source = context.getSource();
+                                    if (requested == null) {
+                                        source.sendFailure(Component.literal(
+                                                "Unknown mode '" + raw + "'. Use standalone or downstream."));
+                                        return 0;
+                                    }
+                                    if (!bridge.setMode(requested)) {
+                                        source.sendFailure(Component.literal(
+                                                "Could not write mode=" + requested.getId() + " to the config file."));
+                                        return 0;
+                                    }
+                                    if (requested.isDownstream()) {
+                                        // The new sensor has not greeted the proxy yet, and a hello needs a
+                                        // player to travel on; the next join or probe covers it.
+                                        sendHelloToAnyPlayer(source.getServer());
+                                    } else {
+                                        FabricReporter reporter = bridge.reporter();
+                                        if (reporter != null
+                                                && bridge.settings().bridge().isSyncOnlineOnEnable()) {
+                                            reporter.syncOnline(
+                                                    identities(source.getServer().getPlayerList().getPlayers()),
+                                                    System.currentTimeMillis());
+                                        }
+                                    }
+                                    source.sendSuccess(() -> Component.literal(
+                                            "YuDream bridge mode is now " + requested.getId() + "."), true);
+                                    return 1;
+                                }))));
+    }
+
+    private void sendHelloToAnyPlayer(MinecraftServer server) {
+        List<ServerPlayer> players = server.getPlayerList().getPlayers();
+        if (!players.isEmpty()) {
+            sendHello(players.get(0), server);
+        }
     }
 }

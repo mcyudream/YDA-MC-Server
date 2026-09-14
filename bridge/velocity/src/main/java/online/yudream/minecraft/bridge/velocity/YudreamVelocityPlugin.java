@@ -26,6 +26,8 @@ import online.yudream.minecraft.bridge.common.log.LogSink;
 import online.yudream.minecraft.bridge.common.model.PlayerEventPayload;
 import online.yudream.minecraft.bridge.common.model.PlayerEventType;
 import online.yudream.minecraft.bridge.common.model.PlayerIdentity;
+import online.yudream.minecraft.bridge.common.model.SubServerInfo;
+import online.yudream.minecraft.bridge.common.model.SubServerRoster;
 import online.yudream.minecraft.bridge.common.protocol.BridgeMessage;
 import online.yudream.minecraft.bridge.common.protocol.BridgeProtocol;
 import online.yudream.minecraft.bridge.common.protocol.ProtocolException;
@@ -44,9 +46,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -67,21 +71,28 @@ import java.util.function.Consumer;
  *       chat, movement and interactions. Activity drives AFK transitions only.</li>
  * </ul>
  *
- * <p>{@code target.server} selects which downstream server is reported, so a whole proxy network maps
- * onto one YuDream Admin server id. It can be changed at runtime with {@code /yudreammc target}.
+ * <p><b>Every downstream server is reported</b>, each as its own sub-server: a player moving
+ * {@code fabric -> paper} produces a quit on {@code fabric} and a join on {@code paper}, so YuDream
+ * Admin keeps one time bucket per sub-server and the total stays their sum. The wire format carries
+ * the sub-server name on events and a grouped roster per sub-server in snapshots.
+ *
+ * <p>{@code target.server} is only the <b>default / login-entry marker</b> now: it is what
+ * {@code /yudreammc target} edits and what a login hint reads. It no longer selects, suppresses or
+ * enables any reporting. {@code target.require-sensor} is applied <b>per sub-server</b>: a backend
+ * whose sensor has not said hello is simply not reported, while every other backend keeps reporting.
  */
 @Plugin(
         id = YudreamVelocityPlugin.PLUGIN_ID,
         name = "YuDream Minecraft Bridge",
         version = YudreamVelocityPlugin.VERSION,
-        description = "Reports a selected downstream server's player activity to YuDream Admin.",
+        description = "Reports every downstream server's player activity to YuDream Admin, per sub-server.",
         authors = {"YuDream"},
         url = "https://github.com/mcyudream/YDA-MC-Server")
 public final class YudreamVelocityPlugin {
 
     public static final String PLUGIN_ID = "yudream-velocity";
     /** Keep in sync with the {@code version} above; the annotation needs a literal. */
-    public static final String VERSION = "1.0.0";
+    public static final String VERSION = "1.1.0";
 
     private static final String CONFIG_FILE_NAME = "config.properties";
 
@@ -93,8 +104,13 @@ public final class YudreamVelocityPlugin {
 
     private final ProxyPresence presence = new ProxyPresence();
     private final SensorRegistry sensors = new SensorRegistry();
-    /** Players currently reported to YuDream Admin as online on the target backend. */
-    private final Set<UUID> reportedPresent = ConcurrentHashMap.newKeySet();
+    /**
+     * Players currently reported to YuDream Admin as online, and on which sub-servers.
+     *
+     * <p>Keyed by player because the same player can legitimately be reported on more than one
+     * sub-server for a moment during a switch, and the two quits must both be delivered.
+     */
+    private final Map<UUID, Set<String>> reportedPresence = new ConcurrentHashMap<UUID, Set<String>>();
     /** Backends already warned about a protocol mismatch, so a heartbeat cannot spam the log. */
     private final Set<String> warnedProtocolMismatch = ConcurrentHashMap.newKeySet();
 
@@ -108,8 +124,10 @@ public final class YudreamVelocityPlugin {
     private ScheduledTask snapshotTask;
     private ScheduledTask afkTask;
     private ScheduledTask probeTask;
+    private ScheduledTask topologyTask;
     private boolean warnedAboutTarget;
-    private boolean warnedAboutSensor;
+    /** Backends already warned about a stale sensor, so one outage logs once per backend. */
+    private final Set<String> warnedAboutSensors = ConcurrentHashMap.newKeySet();
 
     @Inject
     public YudreamVelocityPlugin(ProxyServer server, Logger logger, @DataDirectory Path dataDirectory) {
@@ -139,7 +157,7 @@ public final class YudreamVelocityPlugin {
                 .build();
         server.getCommandManager().register(meta, new YudreamCommand(this));
 
-        logger.info("YuDream Velocity bridge {} started. Channel={}, target downstream='{}'.",
+        logger.info("YuDream Velocity bridge {} started. Channel={}, default downstream='{}' (all downstream servers are reported).",
                 VERSION, BridgeProtocol.CHANNEL, settings.targetServer().isEmpty() ? "<unset>" : settings.targetServer());
     }
 
@@ -147,19 +165,23 @@ public final class YudreamVelocityPlugin {
     public void onProxyShutdown(ProxyShutdownEvent event) {
         cancelTasks();
         BridgeSettings bridge = settings.bridge();
+        long now = System.currentTimeMillis();
         if (bridge.isReportQuitOnDisable() && reportQueue != null) {
-            for (UUID uuid : new ArrayList<UUID>(reportedPresent)) {
-                PlayerIdentity identity = presence.identityOf(uuid);
-                if (identity != null) {
-                    reportQueue.submit(PlayerEventType.QUIT, PlayerEventPayload.of(identity, System.currentTimeMillis(), settings.targetServer()));
+            for (Map.Entry<UUID, Set<String>> entry : new ArrayList<Map.Entry<UUID, Set<String>>>(reportedPresence.entrySet())) {
+                PlayerIdentity identity = presence.identityOf(entry.getKey());
+                if (identity == null) {
+                    continue;
+                }
+                for (String serverName : new ArrayList<String>(entry.getValue())) {
+                    reportQueue.submit(PlayerEventType.QUIT, PlayerEventPayload.of(identity, now, serverName));
                 }
             }
-            reportedPresent.clear();
+            reportedPresence.clear();
         }
         if (canReport()) {
-            // An empty snapshot tells YuDream Admin this server has nobody online, which is how it
-            // reconciles quit events missed during a crash.
-            reportQueue.submitSnapshot(Collections.<PlayerEventPayload>emptyList(), System.currentTimeMillis(), settings.targetServer());
+            // An empty roster per sub-server tells YuDream Admin nobody is online anywhere, which is
+            // how it reconciles quit events missed during a crash.
+            reportQueue.submitGroupedSnapshot(emptyRosters(), now);
         }
         if (reportQueue != null) {
             reportQueue.shutdown(bridge.getFlushTimeoutMs());
@@ -189,6 +211,14 @@ public final class YudreamVelocityPlugin {
         }
     }
 
+    /**
+     * A player moved onto a downstream server.
+     *
+     * <p>Every backend is reported, so the transition {@code previous -> new} is always a quit on
+     * {@code previous} plus a join on {@code new}. A first connection has no previous server and is
+     * therefore only a join. This is what makes Admin accumulate one bucket per sub-server instead of
+     * treating a switch as a departure.
+     */
     @Subscribe
     public void onServerConnected(ServerConnectedEvent event) {
         Player player = event.getPlayer();
@@ -200,20 +230,13 @@ public final class YudreamVelocityPlugin {
 
         presence.connected(identity, newServer);
 
-        String target = settings.targetServer();
-        if (target.isEmpty()) {
-            return;
-        }
-        boolean wasOnTarget = target.equals(previousServer);
-        boolean nowOnTarget = target.equals(newServer);
-        if (wasOnTarget && !nowOnTarget) {
+        if (previousServer != null && !previousServer.equals(newServer)) {
             reportQuit(identity, previousServer);
-        } else if (nowOnTarget) {
-            reportJoin(identity, newServer);
-        } else if (previousServer != null && !previousServer.equals(newServer)
-                && settings.bridge().isServerSwitchEventEnabled()) {
-            reportServerSwitch(identity, previousServer, newServer);
+            if (settings.bridge().isServerSwitchEventEnabled()) {
+                reportServerSwitch(identity, previousServer, newServer);
+            }
         }
+        reportJoin(identity, newServer);
     }
 
     @Subscribe
@@ -226,7 +249,8 @@ public final class YudreamVelocityPlugin {
         if (identity == null) {
             identity = identity(player);
         }
-        if (serverName != null && serverName.equals(settings.targetServer())) {
+        // Quit the sub-server the player was actually on, whatever it is.
+        if (serverName != null) {
             reportQuit(identity, serverName);
         }
     }
@@ -268,25 +292,19 @@ public final class YudreamVelocityPlugin {
         warnedProtocolMismatch.remove(serverName);
         boolean first = sensors.hello(serverName, hello.modVersion(), hello.protocolVersion(), hello.players().size(), System.currentTimeMillis());
         if (first) {
-            warnedAboutSensor = false;
+            warnedAboutSensors.remove(serverName);
             log.info("YuDream sensor confirmed on downstream server '" + serverName
                     + "' (mod " + hello.modVersion() + ", protocol " + hello.protocolVersion()
                     + ", players=" + hello.players().size() + ").");
         }
-        if (!serverName.equals(settings.targetServer())) {
-            return;
-        }
-        // Announce everyone the proxy believes is on the target, which covers a proxy restart while
-        // players were already online.
+        // Announce everyone the proxy believes is on this backend, which covers a proxy restart while
+        // players were already online and is also the moment this backend becomes reportable.
         for (PlayerIdentity identity : presence.playersOn(serverName)) {
             reportJoin(identity, serverName);
         }
     }
 
     private void onSensorEvent(String serverName, BridgeMessage.Event event) {
-        if (!serverName.equals(settings.targetServer())) {
-            return;
-        }
         PlayerIdentity player = event.player();
         if (player == null) {
             return;
@@ -307,7 +325,9 @@ public final class YudreamVelocityPlugin {
             return;
         }
         if (BridgeMessage.KIND_ACTIVITY.equals(kind)) {
-            if (!canReport() || !serverName.equals(presence.serverOf(player.uuid()))) {
+            // Activity is gated per sub-server: only the backend the player is actually on, and only
+            // when that backend is reportable at all.
+            if (!canReport(serverName) || !serverName.equals(presence.serverOf(player.uuid()))) {
                 return;
             }
             afkTracker.markActive(player, serverName, event.at() > 0 ? event.at() : System.currentTimeMillis(), settings.bridge());
@@ -316,11 +336,18 @@ public final class YudreamVelocityPlugin {
 
     // ------------------------------------------------------------------ reporting
 
+    /**
+     * Reports a join on one sub-server.
+     *
+     * <p>Deduplicated per (player, sub-server), so a sensor hello or a {@code sync} cannot produce a
+     * second join for the same stay.
+     */
     private void reportJoin(PlayerIdentity identity, String serverName) {
-        if (identity == null || !canReport()) {
+        if (identity == null || serverName == null || serverName.isEmpty() || !canReport(serverName)) {
             return;
         }
-        if (!reportedPresent.add(identity.uuid())) {
+        Set<String> servers = reportedPresence.computeIfAbsent(identity.uuid(), key -> ConcurrentHashMap.<String>newKeySet());
+        if (!servers.add(serverName)) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -328,19 +355,24 @@ public final class YudreamVelocityPlugin {
         reportQueue.submit(PlayerEventType.JOIN, PlayerEventPayload.of(identity, now, serverName));
     }
 
+    /** Reports a quit on one sub-server; other sub-servers the player is on are left alone. */
     private void reportQuit(PlayerIdentity identity, String serverName) {
-        if (identity == null || reportQueue == null) {
+        if (identity == null || serverName == null || serverName.isEmpty() || reportQueue == null) {
             return;
         }
-        if (!reportedPresent.remove(identity.uuid())) {
+        Set<String> servers = reportedPresence.get(identity.uuid());
+        if (servers == null || !servers.remove(serverName)) {
             return;
         }
-        afkTracker.markOffline(identity.uuid());
+        if (servers.isEmpty()) {
+            reportedPresence.remove(identity.uuid());
+            afkTracker.markOffline(identity.uuid());
+        }
         reportQueue.submit(PlayerEventType.QUIT, PlayerEventPayload.of(identity, System.currentTimeMillis(), serverName));
     }
 
     private void reportServerSwitch(PlayerIdentity identity, String fromServer, String toServer) {
-        if (!canReport()) {
+        if (!canReport(toServer)) {
             return;
         }
         reportQueue.submit(PlayerEventType.SERVER_SWITCH,
@@ -348,82 +380,119 @@ public final class YudreamVelocityPlugin {
         log.debug("Cross-server switch " + identity.name() + ": " + fromServer + " -> " + toServer);
     }
 
-    /** Re-reports joins for everyone already on the target and sends a snapshot. */
+    /** Re-reports joins for everyone online and sends a grouped snapshot covering every sub-server. */
     public void syncOnlinePlayers() {
-        String target = settings.targetServer();
-        if (target.isEmpty()) {
-            return;
-        }
-        for (PlayerIdentity identity : presence.playersOn(target)) {
-            reportJoin(identity, target);
+        for (String serverName : reportableServers()) {
+            for (PlayerIdentity identity : presence.playersOn(serverName)) {
+                reportJoin(identity, serverName);
+            }
         }
         reportSnapshot();
     }
 
+    /**
+     * Reports one roster per sub-server.
+     *
+     * <p>A sub-server with a confirmed sensor is listed even when nobody is on it: that empty roster
+     * is what tells Admin to close anyone it still believes is there. Sub-servers the sensor gate
+     * excludes are omitted entirely, so the snapshot never claims to know about them.
+     */
     private void reportSnapshot() {
         if (!canReport()) {
             return;
         }
-        String target = settings.targetServer();
         long observedAt = System.currentTimeMillis();
-        List<PlayerEventPayload> players = new ArrayList<PlayerEventPayload>();
-        for (PlayerIdentity identity : presence.playersOn(target)) {
-            players.add(PlayerEventPayload.of(identity, observedAt, target));
+        List<SubServerRoster> rosters = new ArrayList<SubServerRoster>();
+        for (String serverName : reportableServers()) {
+            List<PlayerEventPayload> players = new ArrayList<PlayerEventPayload>();
+            for (PlayerIdentity identity : presence.playersOn(serverName)) {
+                players.add(PlayerEventPayload.of(identity, observedAt, serverName));
+            }
+            rosters.add(new SubServerRoster(serverName, players));
         }
-        reportQueue.submitSnapshot(players, observedAt, target);
+        if (rosters.isEmpty()) {
+            return;
+        }
+        reportQueue.submitGroupedSnapshot(rosters, observedAt);
+    }
+
+    /** The same sub-server list as {@link #reportSnapshot()}, each with an empty roster. */
+    private List<SubServerRoster> emptyRosters() {
+        List<SubServerRoster> rosters = new ArrayList<SubServerRoster>();
+        for (String serverName : reportableServers()) {
+            rosters.add(SubServerRoster.empty(serverName));
+        }
+        return rosters;
+    }
+
+    /** Every downstream server this bridge is allowed to report right now. */
+    private List<String> reportableServers() {
+        List<String> names = new ArrayList<String>();
+        for (com.velocitypowered.api.proxy.server.RegisteredServer registered : server.getAllServers()) {
+            String name = registered.getServerInfo().getName();
+            if (canReport(name)) {
+                names.add(name);
+            }
+        }
+        names.sort(String::compareTo);
+        return names;
     }
 
     private void tickAfk() {
-        String target = settings.targetServer();
         if (!canReport()) {
             return;
         }
-        List<PlayerIdentity> online = presence.playersOn(target);
-        // Drop AFK state for anyone the authoritative presence view no longer has on the target, so
-        // the tracker cannot grow across target switches.
-        List<UUID> tracked = new ArrayList<UUID>(online.size());
-        for (PlayerIdentity identity : online) {
-            tracked.add(identity.uuid());
+        long now = System.currentTimeMillis();
+        // AFK state is keyed by player, and a player is on exactly one backend at a time, so the
+        // tracker only needs the union of the reportable backends' players to stay bounded.
+        List<UUID> tracked = new ArrayList<UUID>();
+        for (String serverName : reportableServers()) {
+            List<PlayerIdentity> online = presence.playersOn(serverName);
+            for (PlayerIdentity identity : online) {
+                tracked.add(identity.uuid());
+            }
+            afkTracker.tick(online, serverName, now, settings.bridge());
+            warnIfSensorStale(serverName, online.size());
         }
         afkTracker.retainOnly(tracked);
-        afkTracker.tick(online, target, System.currentTimeMillis(), settings.bridge());
-        warnIfSensorStale(online.size());
     }
 
-    private void warnIfSensorStale(int playersOnTarget) {
-        String target = settings.targetServer();
-        if (target.isEmpty() || !sensors.isConfirmed(target)) {
+    private void warnIfSensorStale(String serverName, int playersOnServer) {
+        if (serverName == null || serverName.isEmpty() || !sensors.isConfirmed(serverName)) {
             return;
         }
         long timeoutMs = settings.sensorTimeoutSeconds() * 1000L;
-        if (playersOnTarget > 0 && sensors.isStale(target, timeoutMs, System.currentTimeMillis())) {
-            if (!warnedAboutSensor) {
-                warnedAboutSensor = true;
-                log.warn("No hello from the YuDream sensor on '" + target + "' for over "
-                        + settings.sensorTimeoutSeconds() + "s while " + playersOnTarget
+        if (playersOnServer > 0 && sensors.isStale(serverName, timeoutMs, System.currentTimeMillis())) {
+            if (warnedAboutSensors.add(serverName)) {
+                log.warn("No hello from the YuDream sensor on '" + serverName + "' for over "
+                        + settings.sensorTimeoutSeconds() + "s while " + playersOnServer
                         + " player(s) are online there. The mod may have been removed or is failing;"
                         + " presence reports continue, AFK transitions do not.");
             }
         } else {
-            warnedAboutSensor = false;
+            warnedAboutSensors.remove(serverName);
         }
     }
 
-    /** Asks the target backend's sensors to introduce themselves again. */
-    private void probeTarget() {
-        String target = settings.targetServer();
-        if (target.isEmpty()) {
-            return;
-        }
+    /**
+     * Asks every backend's sensors to introduce themselves again.
+     *
+     * <p>One probe on any player connection reaches the backend once and covers every sensor there,
+     * so this walks the connected players and probes each distinct backend a single time.
+     */
+    private void probeBackends() {
         byte[] probe = BridgeProtocol.encode(new BridgeMessage.Probe(VERSION, BridgeProtocol.PROTOCOL_VERSION));
+        Set<String> probed = new java.util.HashSet<String>();
         for (Player player : server.getAllPlayers()) {
             Optional<ServerConnection> connection = player.getCurrentServer();
-            if (connection.isEmpty() || !target.equals(connection.get().getServerInfo().getName())) {
+            if (connection.isEmpty()) {
                 continue;
             }
-            // One probe on any player connection reaches the backend once and covers every sensor.
+            String serverName = connection.get().getServerInfo().getName();
+            if (!probed.add(serverName)) {
+                continue;
+            }
             connection.get().sendPluginMessage(channel, probe);
-            return;
         }
     }
 
@@ -455,20 +524,18 @@ public final class YudreamVelocityPlugin {
         seedAfkState();
         reschedule();
         checkConfiguration();
-        probeTarget();
+        probeBackends();
         if (bridge.isSyncOnlineOnEnable()) {
             syncOnlinePlayers();
         }
     }
 
     private void seedAfkState() {
-        String target = settings.targetServer();
-        if (target.isEmpty()) {
-            return;
-        }
         long now = System.currentTimeMillis();
-        for (PlayerIdentity identity : presence.playersOn(target)) {
-            afkTracker.markOnline(identity, now);
+        for (String serverName : reportableServers()) {
+            for (PlayerIdentity identity : presence.playersOn(serverName)) {
+                afkTracker.markOnline(identity, now);
+            }
         }
     }
 
@@ -482,14 +549,25 @@ public final class YudreamVelocityPlugin {
         if (!settings.hasTarget()) {
             if (!warnedAboutTarget) {
                 warnedAboutTarget = true;
-                log.warn("No downstream server is selected. Set target.server in " + configPath
-                        + " or run /yudreammc target <server>. Nothing will be reported until then.");
+                log.info("No default downstream server is marked. Set target.server in " + configPath
+                        + " or run /yudreammc target <server> to record which backend is the login entry;"
+                        + " every downstream server is reported either way.");
             }
         } else {
             warnedAboutTarget = false;
-            if (settings.requireSensor() && !sensors.isConfirmed(settings.targetServer())) {
-                log.info("Waiting for the YuDream sensor on '" + settings.targetServer()
-                        + "' to say hello before reporting anything (target.require-sensor=true).");
+        }
+        if (settings.requireSensor() && bridge.isEnabled() && bridge.isConfigured()) {
+            List<String> pending = new ArrayList<String>();
+            for (com.velocitypowered.api.proxy.server.RegisteredServer registered : server.getAllServers()) {
+                String name = registered.getServerInfo().getName();
+                if (!sensors.isConfirmed(name)) {
+                    pending.add(name);
+                }
+            }
+            if (!pending.isEmpty()) {
+                log.info("Waiting for the YuDream sensor on " + pending
+                        + " before reporting those sub-servers (target.require-sensor=true)."
+                        + " Every other sub-server keeps reporting.");
             }
         }
     }
@@ -503,13 +581,20 @@ public final class YudreamVelocityPlugin {
         afkTask = server.getScheduler().buildTask(this, this::tickAfk)
                 .repeat(Duration.ofSeconds(afkSeconds))
                 .schedule();
-        probeTask = server.getScheduler().buildTask(this, this::probeTarget)
+        probeTask = server.getScheduler().buildTask(this, this::probeBackends)
                 .repeat(Duration.ofSeconds(settings.probeIntervalSeconds()))
                 .schedule();
+        if (settings.topologyEnabled()) {
+            // Report once shortly after start, then on the configured cadence.
+            topologyTask = server.getScheduler().buildTask(this, this::reportTopology)
+                    .delay(Duration.ofSeconds(5))
+                    .repeat(Duration.ofSeconds(settings.topologyIntervalSeconds()))
+                    .schedule();
+        }
     }
 
     private void cancelTasks() {
-        for (ScheduledTask task : new ScheduledTask[]{snapshotTask, afkTask, probeTask}) {
+        for (ScheduledTask task : new ScheduledTask[]{snapshotTask, afkTask, probeTask, topologyTask}) {
             if (task != null) {
                 task.cancel();
             }
@@ -517,11 +602,15 @@ public final class YudreamVelocityPlugin {
         snapshotTask = null;
         afkTask = null;
         probeTask = null;
+        topologyTask = null;
     }
 
     /**
-     * Switches the reported downstream server, persists it and reconciles YuDream Admin: everybody
-     * reported on the previous target is quit, everybody on the new one is joined.
+     * Records which downstream server is the login entry, and persists it.
+     *
+     * <p>This is a marker only. Reporting covers every sub-server, so changing this value must not
+     * quit, join or otherwise re-reconcile anything: it used to, back when one target decided what
+     * was uploaded, and doing that now would silently suppress a sub-server's data.
      *
      * @return the previous target, or an empty string when none was set
      */
@@ -535,42 +624,57 @@ public final class YudreamVelocityPlugin {
             file.set("target.server", newTarget);
             file.save(configPath);
         } catch (IOException e) {
-            log.warn("Could not persist the new target downstream server to " + configPath + ": " + e.getMessage(), e);
+            log.warn("Could not persist the default downstream server to " + configPath + ": " + e.getMessage(), e);
             return previous;
         }
-        // Quit the previous target's players *before* the new target is applied. canReport() is
-        // evaluated against the target that is still current, so switching to a backend that has no
-        // confirmed sensor cannot silently swallow the quits and leave Admin with ghost players.
-        for (UUID uuid : new ArrayList<UUID>(reportedPresent)) {
-            PlayerIdentity identity = presence.identityOf(uuid);
-            reportQuit(identity, previous);
-        }
-        reportedPresent.clear();
-
         settings = settings.with(settings.bridge(), newTarget);
-
-        if (!newTarget.isEmpty()) {
-            warnedAboutTarget = false;
-            for (PlayerIdentity identity : presence.playersOn(newTarget)) {
-                reportJoin(identity, newTarget);
-            }
-            reportSnapshot();
-            probeTarget();
-        }
+        warnedAboutTarget = false;
+        log.info("Default downstream server is now '" + (newTarget.isEmpty() ? "<unset>" : newTarget)
+                + "'. Reporting is unaffected: every sub-server is still reported.");
         return previous;
     }
 
     // ------------------------------------------------------------------ accessors used by the command
 
+    /**
+     * Whether this sub-server may be reported right now.
+     *
+     * <p>The sensor gate is applied here and nowhere else, which is what makes it per sub-server: a
+     * backend whose sensor has not said hello is skipped while every other backend keeps reporting.
+     */
+    public boolean canReport(String serverName) {
+        if (serverName == null || serverName.isEmpty() || !isConfiguredForReporting()) {
+            return false;
+        }
+        return !settings.requireSensor() || sensors.isConfirmed(serverName);
+    }
+
+    /**
+     * Whether <em>anything</em> can be reported right now.
+     *
+     * <p>Used as the queue's coarse gate and by {@code /yudreammc status}. It deliberately no longer
+     * depends on {@code target.server}: with the per-sub-server sensor gate it is true as soon as one
+     * known backend is reportable.
+     */
     public boolean canReport() {
+        if (!isConfiguredForReporting()) {
+            return false;
+        }
+        if (!settings.requireSensor()) {
+            return true;
+        }
+        for (com.velocitypowered.api.proxy.server.RegisteredServer registered : server.getAllServers()) {
+            if (sensors.isConfirmed(registered.getServerInfo().getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Enabled plus a complete Admin endpoint. Independent of any sub-server or sensor. */
+    private boolean isConfiguredForReporting() {
         BridgeSettings bridge = settings.bridge();
-        if (!bridge.isEnabled() || !bridge.isConfigured()) {
-            return false;
-        }
-        if (!settings.hasTarget()) {
-            return false;
-        }
-        return !settings.requireSensor() || sensors.isConfirmed(settings.targetServer());
+        return bridge.isEnabled() && bridge.isConfigured();
     }
 
     public VelocitySettings settings() {
@@ -602,7 +706,7 @@ public final class YudreamVelocityPlugin {
     }
 
     public int reportedPlayerCount() {
-        return reportedPresent.size();
+        return reportedPresence.size();
     }
 
     public int afkTrackedPlayers() {
@@ -613,16 +717,104 @@ public final class YudreamVelocityPlugin {
         return configPath;
     }
 
-    /** Names of every downstream server Velocity knows about, with the players currently on each. */
+    /** Names of every downstream server Velocity knows about, with players, sensor and report state. */
     public List<String> describeServers() {
         List<String> lines = new ArrayList<String>();
         for (com.velocitypowered.api.proxy.server.RegisteredServer registered : server.getAllServers()) {
             String name = registered.getServerInfo().getName();
             lines.add(name + " (players=" + presence.countOn(name)
-                    + (sensors.isConfirmed(name) ? ", sensor=yes" : ", sensor=no") + ")");
+                    + (sensors.isConfirmed(name) ? ", sensor=yes" : ", sensor=no")
+                    + ", reporting=" + (canReport(name) ? "yes" : "no") + ")");
         }
         lines.sort(String::compareTo);
         return lines;
+    }
+
+    /** Every downstream server Velocity knows about, as the topology report describes them. */
+    public List<SubServerInfo> subServers() {
+        List<String> tryOrder = new ArrayList<String>();
+        try {
+            List<String> configured = server.getConfiguration().getAttemptConnectionOrder();
+            if (configured != null) {
+                tryOrder.addAll(configured);
+            }
+        } catch (RuntimeException ignored) {
+            // Older Velocity builds may not expose the try list; the default flag is only a label.
+        }
+        List<SubServerInfo> items = new ArrayList<SubServerInfo>();
+        for (com.velocitypowered.api.proxy.server.RegisteredServer registered : server.getAllServers()) {
+            com.velocitypowered.api.proxy.server.ServerInfo info = registered.getServerInfo();
+            String name = info.getName();
+            items.add(new SubServerInfo(
+                    name,
+                    String.valueOf(info.getAddress()),
+                    registered.getPlayersConnected().size(),
+                    sensors.isConfirmed(name),
+                    !tryOrder.isEmpty() && tryOrder.get(0).equals(name)));
+        }
+        items.sort(Comparator.comparing(SubServerInfo::name));
+        return items;
+    }
+
+    /**
+     * The addresses this report advertises, used by Admin to find the matching server entry.
+     *
+     * <p>Falls back to Velocity's bind address, which is normally {@code 0.0.0.0} and therefore
+     * unmatched — hence {@code topology.addresses}.
+     */
+    public List<String> advertisedAddresses() {
+        if (!settings.topologyAddresses().isEmpty()) {
+            return settings.topologyAddresses();
+        }
+        List<String> fallback = new ArrayList<String>();
+        try {
+            InetSocketAddress bound = server.getBoundAddress();
+            if (bound != null && bound.getHostString() != null && !bound.getHostString().isEmpty()) {
+                fallback.add(bound.getHostString() + ":" + bound.getPort());
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return fallback;
+    }
+
+    /**
+     * Reports this proxy's downstream-server list to YuDream Admin.
+     *
+     * <p>A proxy's Server List Ping describes the proxy and never its backends, so this is the only
+     * way Admin can learn what a group server contains. When no server id is configured the report is
+     * matched by address instead, which is what lets an operator resolve a group server by installing
+     * the bridge and nothing else.
+     */
+    public void reportTopology() {
+        if (!settings.topologyEnabled() || !settings.bridge().hasCredentials()) {
+            return;
+        }
+        final YudreamApiClient client = apiClient;
+        if (client == null) {
+            return;
+        }
+        final List<SubServerInfo> servers = subServers();
+        final boolean bound = !settings.bridge().getServerId().isEmpty();
+        final String body = client.topologyBody("velocity", server.getVersion().getVersion(),
+                advertisedAddresses(), servers, System.currentTimeMillis());
+        server.getScheduler().buildTask(this, () -> {
+            try {
+                HttpResult result = bound ? client.reportTopology(body) : client.reportTopologyByAddress(body);
+                if (result.isSuccess()) {
+                    log.info("Reported " + servers.size() + " downstream server(s) to YuDream Admin (http="
+                            + result.statusCode() + ").");
+                } else if (result.statusCode() == 404 || result.statusCode() == 400) {
+                    log.warn("YuDream Admin could not match the proxy topology (HTTP " + result.statusCode()
+                            + " " + result.trimmedBody() + "). Set topology.addresses to the address players"
+                            + " connect to, or set api.server-id to bind this report to one Admin server entry.");
+                } else {
+                    log.warn("Could not report the proxy topology: HTTP " + result.statusCode()
+                            + " " + result.trimmedBody() + ".");
+                }
+            } catch (Exception e) {
+                log.warn("Could not report the proxy topology: " + e.getMessage(), e);
+            }
+        }).schedule();
     }
 
     /** Queries YuDream Admin asynchronously and hands the result to the callback. */

@@ -161,6 +161,17 @@ public final class BridgeSettings {
         return !baseUrl.isEmpty() && !serverId.isEmpty() && !apiKey.isEmpty();
     }
 
+    /**
+     * True when Admin's address and key are set, whether or not a server id is.
+     *
+     * <p>Only the topology report can work without a server id: Admin matches it by the proxy's own
+     * addresses. Everything that attributes player activity to a server still needs the id, which is
+     * why {@link #isConfigured()} stays stricter.
+     */
+    public boolean hasCredentials() {
+        return !baseUrl.isEmpty() && !apiKey.isEmpty();
+    }
+
     public boolean isEnabled() {
         return enabled;
     }

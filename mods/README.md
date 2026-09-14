@@ -64,8 +64,8 @@ cd mods
 
 Outputs:
 
-- `mods/forge-1.20.1/build/libs/yudream_minecraft_server-forge-1.20.1-1.0.0.jar`
-- `mods/neoforge-1.21.1/build/libs/yudream_minecraft_server-neoforge-1.21.1-1.0.0.jar`
+- `mods/forge-1.20.1/build/libs/yudream_minecraft_server-forge-1.20.1-1.1.0.jar`
+- `mods/neoforge-1.21.1/build/libs/yudream_minecraft_server-neoforge-1.21.1-1.1.0.jar`
 
 ## Config
 
