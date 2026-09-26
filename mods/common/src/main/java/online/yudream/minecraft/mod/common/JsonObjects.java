@@ -8,11 +8,15 @@ public final class JsonObjects {
     }
 
     public static String playerEvent(PlayerEventPayload payload) {
-        return "{"
-                + "\"playerId\":\"" + escape(payload.getPlayerId()) + "\","
-                + "\"playerName\":\"" + escape(payload.getPlayerName()) + "\","
-                + "\"eventAt\":" + payload.getEventAt()
-                + "}";
+        StringBuilder json = new StringBuilder("{")
+                .append("\"playerId\":\"").append(escape(payload.getPlayerId())).append("\",")
+                .append("\"playerName\":\"").append(escape(payload.getPlayerName())).append("\",")
+                .append("\"eventAt\":").append(payload.getEventAt());
+        // content 只在群服互联事件（聊天/死亡/成就）上出现；旧端点的载荷保持不变
+        if (payload.getContent() != null) {
+            json.append(",\"content\":\"").append(escape(payload.getContent())).append("\"");
+        }
+        return json.append("}").toString();
     }
 
     public static String playerSnapshot(Collection<PlayerEventPayload> players, long observedAt) {

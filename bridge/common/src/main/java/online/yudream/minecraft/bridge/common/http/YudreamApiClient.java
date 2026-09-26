@@ -45,7 +45,7 @@ public final class YudreamApiClient {
     }
 
     public HttpResult report(PlayerEventType type, PlayerEventPayload payload) throws IOException {
-        return request("POST", serverUrl("/players/" + type.getRemotePath()), eventBody(payload));
+        return request("POST", serverUrl("/" + type.getRemotePath()), eventBody(payload));
     }
 
     public HttpResult snapshot(Collection<PlayerEventPayload> players, long observedAt, String serverName) throws IOException {
@@ -57,6 +57,12 @@ public final class YudreamApiClient {
         return request("GET", serverUrl(path), null);
     }
 
+    /** 群服互联：按游标增量拉取要广播进游戏的群消息。 */
+    public HttpResult inboundChat(long after) throws IOException {
+        String path = "/chat/inbound?after=" + Math.max(after, 0) + "&limit=50";
+        return request("GET", serverUrl(path), null);
+    }
+
     public String serverUrl(String serverRelativePath) {
         return settings.getBaseUrl()
                 + PLUGIN_PATH
@@ -65,11 +71,15 @@ public final class YudreamApiClient {
     }
 
     public String eventBody(PlayerEventPayload payload) {
-        return JsonValue.object()
+        JsonValue body = JsonValue.object()
                 .put("playerId", payload.playerId())
                 .put("playerName", payload.playerName())
-                .put("eventAt", payload.eventAt())
-                .toString();
+                .put("eventAt", payload.eventAt());
+        // content 只在群服互联事件（聊天/死亡/成就）上出现；旧端点的载荷保持不变
+        if (payload.content() != null && !payload.content().isEmpty()) {
+            body.put("content", payload.content());
+        }
+        return body.toString();
     }
 
     public String snapshotBody(Collection<PlayerEventPayload> players, long observedAt, String serverName) {

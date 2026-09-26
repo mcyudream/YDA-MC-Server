@@ -3,6 +3,7 @@ package online.yudream.minecraft.bukkit.bridge;
 import online.yudream.minecraft.bukkit.YudreamMinecraftPlugin;
 import online.yudream.minecraft.bukkit.config.DownstreamOptions;
 import online.yudream.minecraft.bukkit.report.PlayerEventPayload;
+import online.yudream.minecraft.bukkit.report.PlayerEventType;
 import online.yudream.minecraft.bukkit.util.PlayerSnapshots;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.messaging.Messenger;
@@ -121,6 +122,29 @@ public final class DownstreamSensor implements PluginMessageListener {
         sendEvent(player, BridgeProtocol.KIND_ACTIVITY, source);
     }
 
+    /**
+     * 群服互联：把聊天/死亡/成就事件转发给代理，由代理统一上报 Admin。
+     *
+     * <p>与活动信号不同，这类事件每次都要转发（它们就是消息本身）；代理按服务器维度上报。
+     */
+    public void onGameEvent(PlayerEventType type, PlayerEventPayload payload) {
+        String kind;
+        if (type == PlayerEventType.CHAT) {
+            kind = BridgeProtocol.KIND_CHAT;
+        } else if (type == PlayerEventType.DEATH) {
+            kind = BridgeProtocol.KIND_DEATH;
+        } else if (type == PlayerEventType.ADVANCEMENT) {
+            kind = BridgeProtocol.KIND_ADVANCEMENT;
+        } else {
+            return;
+        }
+        Player carrier = firstOnlinePlayer();
+        if (carrier == null) {
+            return;
+        }
+        send(carrier, BridgeProtocol.encodeEvent(kind, null, payload, payload.getEventAt()));
+    }
+
     /** Sends a hello right now, used by {@code /yudreammc sync}. */
     public void requestHello() {
         sendHello(null);
@@ -189,9 +213,21 @@ public final class DownstreamSensor implements PluginMessageListener {
                     sendHello(player);
                 } else if (incoming.isHelloAck()) {
                     onHelloAck(incoming);
+                } else if (incoming.isGroupMessage()) {
+                    broadcastGroupMessage(incoming);
                 }
             }
         });
+    }
+
+    /** 群服互联入站：把代理下发的群消息按本机格式广播进游戏。 */
+    private void broadcastGroupMessage(BridgeProtocol.Incoming incoming) {
+        String content = incoming.getContent();
+        if (content == null || content.trim().isEmpty()) {
+            return;
+        }
+        String line = plugin.getSettings().getChatBridge().formatInbound(incoming.getSender(), content);
+        plugin.getServer().broadcastMessage(line);
     }
 
     private void onHelloAck(BridgeProtocol.Incoming incoming) {

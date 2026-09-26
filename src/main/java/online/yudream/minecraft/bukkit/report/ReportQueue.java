@@ -194,11 +194,14 @@ public final class ReportQueue {
         }
         StringBuilder message = new StringBuilder();
         message.append("type=").append(task.type);
-        message.append(", endpoint=/players/").append(task.type.getRemotePath());
+        message.append(", endpoint=/").append(task.type.getRemotePath());
         message.append(", player=").append(task.payload.getPlayerName());
         if (config.isLogPayload()) {
             message.append(", playerId=").append(task.payload.getPlayerId());
             message.append(", eventAt=").append(task.payload.getEventAt());
+            if (task.payload.getContent() != null) {
+                message.append(", content=").append(task.payload.getContent());
+            }
         }
         return message.toString();
     }

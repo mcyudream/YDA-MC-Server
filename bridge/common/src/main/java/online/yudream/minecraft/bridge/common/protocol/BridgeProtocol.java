@@ -64,6 +64,11 @@ public final class BridgeProtocol {
                         root.getOr("protocol", JsonValue.of(PROTOCOL_VERSION)).asInt(PROTOCOL_VERSION));
             case BridgeMessage.TYPE_EVENT:
                 return readEvent(root);
+            case BridgeMessage.TYPE_GROUP_MSG:
+                return new BridgeMessage.GroupMessage(
+                        root.getOr("sender", JsonValue.of("")).asString(""),
+                        root.getOr("content", JsonValue.of("")).asString(""),
+                        root.getOr("at", JsonValue.of(0L)).asLong(0L));
             default:
                 throw new ProtocolException("Unknown bridge message type '" + type + "'");
         }
@@ -112,6 +117,7 @@ public final class BridgeProtocol {
                 kind,
                 root.has("source") ? root.get("source").asString(null) : null,
                 readIdentity(root.get("player")),
-                root.getOr("at", JsonValue.of(0L)).asLong(0L));
+                root.getOr("at", JsonValue.of(0L)).asLong(0L),
+                root.has("content") ? root.get("content").asString(null) : null);
     }
 }

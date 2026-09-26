@@ -75,3 +75,19 @@ shutdown:
   # Keep false for plugin reloads. Enable only if you need forced quit reports on disable.
   report-quit-on-disable: false
   flush-timeout-ms: 5000
+
+# 群服互联（Group-server bridge）。
+# 转发哪些消息、发到哪个 QQ 群，在 YuDream Admin 的「MC 服务器 → 编辑服务器 → 群服互联」里逐服务器配置；
+# 这里的开关只决定本机是否参与上报与广播。
+chat-bridge:
+  # 本机群服互联总开关。
+  enabled: true
+  # 上报聊天、死亡、成就事件（进退服通知由 Admin 侧基于已有的进退服上报直接生成，无需这里上报）。
+  report-events: true
+  # 拉取群聊消息并广播进游戏。下游（代理）模式下由代理统一拉取，本机此开关不生效。
+  poll-inbound: true
+  # 群消息拉取间隔（秒），最小 2。
+  poll-interval-seconds: 3
+  # 广播格式；{sender} 是发送者 QQ 标识，{content} 是消息内容。
+  inbound-format: "§8[§a群§8] §f{sender} §7» §f{content}"
+

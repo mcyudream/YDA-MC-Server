@@ -14,12 +14,15 @@ import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.CommandEvent;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.event.ServerChatEvent;
+import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
+import net.neoforged.neoforge.event.entity.player.AdvancementEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import online.yudream.minecraft.mod.common.LogSink;
+import online.yudream.minecraft.mod.common.PlayerEventType;
 import online.yudream.minecraft.mod.common.PlayerIdentity;
 import online.yudream.minecraft.mod.common.YudreamBridgeService;
 import org.slf4j.Logger;
@@ -53,6 +56,9 @@ public final class YudreamNeoForgeMod {
     public void onServerStarted(ServerStartedEvent event) {
         server = event.getServer();
         service.start();
+        // 群服互联入站：群消息异步拉取后切回主线程广播给全体玩家
+        service.setInboundBroadcast(line -> server.execute(() ->
+                server.getPlayerList().broadcastSystemMessage(Component.literal(line), false)));
         if (service.shouldSyncOnlineOnStart()) {
             service.syncOnline(onlinePlayers());
         }
@@ -95,11 +101,34 @@ public final class YudreamNeoForgeMod {
             }
         }
         service.tick(onlinePlayers());
+        service.tickInbound();
     }
 
     @net.neoforged.bus.api.SubscribeEvent
     public void onChat(ServerChatEvent event) {
         service.markActive(identity(event.getPlayer()));
+        // 群服互联：聊天原文上报（Admin 侧配置决定是否转发）
+        service.reportGameEvent(PlayerEventType.CHAT, identity(event.getPlayer()), event.getMessage().getString());
+    }
+
+    @net.neoforged.bus.api.SubscribeEvent
+    public void onLivingDeath(LivingDeathEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            service.reportGameEvent(PlayerEventType.DEATH, identity(player),
+                    player.getCombatTracker().getDeathMessage().getString());
+        }
+    }
+
+    @net.neoforged.bus.api.SubscribeEvent
+    public void onAdvancement(AdvancementEvent.AdvancementEarnEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) {
+            return;
+        }
+        var display = event.getAdvancement().value().display().orElse(null);
+        if (display == null || !display.shouldAnnounceChat()) {
+            return;
+        }
+        service.reportGameEvent(PlayerEventType.ADVANCEMENT, identity(player), display.getTitle().getString());
     }
 
     @net.neoforged.bus.api.SubscribeEvent

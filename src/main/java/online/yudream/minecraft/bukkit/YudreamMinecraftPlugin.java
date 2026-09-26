@@ -4,10 +4,13 @@ import online.yudream.minecraft.bukkit.afk.AfkTracker;
 import online.yudream.minecraft.bukkit.api.YudreamApiClient;
 import online.yudream.minecraft.bukkit.bridge.BridgeMode;
 import online.yudream.minecraft.bukkit.bridge.DownstreamSensor;
+import online.yudream.minecraft.bukkit.bridge.InboundChatPoller;
 import online.yudream.minecraft.bukkit.command.YudreamCommand;
+import online.yudream.minecraft.bukkit.compat.AdvancementCompatibility;
 import online.yudream.minecraft.bukkit.compat.PaperChatCompatibility;
 import online.yudream.minecraft.bukkit.compat.ServerCompatibility;
 import online.yudream.minecraft.bukkit.config.YudreamConfig;
+import online.yudream.minecraft.bukkit.event.GameEventListener;
 import online.yudream.minecraft.bukkit.event.PlayerActivityListener;
 import online.yudream.minecraft.bukkit.report.PlayerEventType;
 import online.yudream.minecraft.bukkit.report.PlayerEventPayload;
@@ -47,7 +50,9 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
     private ReportQueue reportQueue;
     private AfkTracker afkTracker;
     private DownstreamSensor sensor;
+    private InboundChatPoller inboundPoller;
     private int snapshotTaskId = -1;
+    private int inboundPollTaskId = -1;
 
     @Override
     public void onEnable() {
@@ -56,8 +61,12 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
         reloadBridge();
 
         getServer().getPluginManager().registerEvents(new PlayerActivityListener(this), this);
+        getServer().getPluginManager().registerEvents(new GameEventListener(this), this);
         if (PaperChatCompatibility.register(this)) {
             getLogger().info("Paper AsyncChatEvent compatibility is active.");
+        }
+        if (AdvancementCompatibility.register(this)) {
+            getLogger().info("Advancement event compatibility is active.");
         }
         PluginCommand command = getCommand("yudreammc");
         if (command != null) {
@@ -84,6 +93,7 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
             getServer().getScheduler().cancelTask(snapshotTaskId);
             snapshotTaskId = -1;
         }
+        stopInboundPoller();
         if (sensor != null) {
             sensor.stop();
             sensor = null;
@@ -137,7 +147,28 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
             sensor.start();
         }
 
+        startInboundPoller();
         warnAboutConfiguration();
+    }
+
+    /** 群服互联入站：随 reload 一起启停，游标跨 reload 保留。 */
+    private void startInboundPoller() {
+        stopInboundPoller();
+        if (!settings.isEnabled() || !settings.getChatBridge().isEnabled() || !settings.getChatBridge().isPollInbound()) {
+            return;
+        }
+        if (inboundPoller == null) {
+            inboundPoller = new InboundChatPoller(this);
+        }
+        inboundPollTaskId = getServer().getScheduler().runTaskTimerAsynchronously(
+                this, (Runnable) () -> inboundPoller.poll(), 20L * 10L, settings.getChatBridge().getPollIntervalTicks()).getTaskId();
+    }
+
+    private void stopInboundPoller() {
+        if (inboundPollTaskId >= 0) {
+            getServer().getScheduler().cancelTask(inboundPollTaskId);
+            inboundPollTaskId = -1;
+        }
     }
 
     private void warnAboutConfiguration() {
@@ -240,6 +271,38 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
         }
         if (canReport() && afkTracker != null) {
             afkTracker.markActive(player);
+        }
+    }
+
+    // ---------------------------------------------------------------- 群服互联（游戏 → 群）
+
+    /** 每条玩家聊天都经过这里；转发与否由 Admin 侧的群服互联配置决定。 */
+    public void handleGameChat(Player player, String message) {
+        reportGameEvent(PlayerEventType.CHAT, player, message);
+    }
+
+    /** 每条死亡消息都经过这里。 */
+    public void handleGameDeath(Player player, String deathMessage) {
+        reportGameEvent(PlayerEventType.DEATH, player, deathMessage);
+    }
+
+    /** 每个达成并会公告的成就都经过这里。 */
+    public void handleGameAdvancement(Player player, String title) {
+        reportGameEvent(PlayerEventType.ADVANCEMENT, player, title);
+    }
+
+    private void reportGameEvent(PlayerEventType type, Player player, String content) {
+        if (content == null || content.trim().isEmpty()) {
+            return;
+        }
+        PlayerEventPayload payload = new PlayerEventPayload(
+                player.getUniqueId().toString(), player.getName(), System.currentTimeMillis(), content.trim());
+        if (sensor != null) {
+            // 下游模式：转发给代理，由代理统一上报（协议与进服/退服信号共用一条通道）。
+            sensor.onGameEvent(type, payload);
+        }
+        if (canReport()) {
+            reportQueue.submit(type, payload);
         }
     }
 

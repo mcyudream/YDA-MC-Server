@@ -22,8 +22,7 @@ public final class YudreamApiClient {
     }
 
     public HttpResult report(PlayerEventType type, PlayerEventPayload payload) throws IOException {
-        String path = "/players/" + type.getRemotePath();
-        return request("POST", serverUrl(path), JsonObjects.playerEvent(payload));
+        return request("POST", serverUrl("/" + type.getRemotePath()), JsonObjects.playerEvent(payload));
     }
 
     public HttpResult snapshot(Collection<PlayerEventPayload> players, long observedAt) throws IOException {
@@ -32,6 +31,12 @@ public final class YudreamApiClient {
 
     public HttpResult players(int page, int size) throws IOException {
         String path = "/players?page=" + Math.max(page, 1) + "&size=" + Math.max(Math.min(size, 100), 1);
+        return request("GET", serverUrl(path), null);
+    }
+
+    /** 群服互联：按游标增量拉取要广播进游戏的群消息。 */
+    public HttpResult inboundChat(long after) throws IOException {
+        String path = "/chat/inbound?after=" + Math.max(after, 0) + "&limit=50";
         return request("GET", serverUrl(path), null);
     }
 

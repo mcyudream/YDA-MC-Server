@@ -6,7 +6,7 @@
 
     <groupId>online.yudream</groupId>
     <artifactId>yudream-minecraft-server-bukkit</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
     <packaging>jar</packaging>
 
     <name>Yudream Minecraft Server Bukkit Plugin</name>

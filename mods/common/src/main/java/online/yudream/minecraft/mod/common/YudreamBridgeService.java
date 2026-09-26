@@ -19,6 +19,10 @@ public final class YudreamBridgeService {
     private BridgeConfig config;
     private YudreamApiClient apiClient;
     private ReportQueue reportQueue;
+    /** 群服互联入站广播回调：由平台 mod 设置，负责把文本切回服务器主线程。 */
+    private volatile java.util.function.Consumer<String> inboundBroadcast;
+    private volatile long inboundCursor;
+    private long lastInboundPollAt;
     private long lastAfkCheckAt;
     private long lastSnapshotAt;
 
@@ -91,6 +95,86 @@ public final class YudreamBridgeService {
         }
         reportQueue.submit(PlayerEventType.QUIT, player.payload(System.currentTimeMillis()));
         states.remove(player.getUuid());
+    }
+
+    // ---------------------------------------------------------------- 群服互联（游戏 → 群）
+
+    /**
+     * 群服互联：上报聊天、死亡或成就事件。转发与否由 Admin 管理端逐服务器配置，
+     * 本地 {@code chat-bridge.report-events} 只决定本机是否上报。
+     */
+    public void reportGameEvent(PlayerEventType type, PlayerIdentity player, String content) {
+        if (!canReport() || !config.isChatReportEvents()) {
+            return;
+        }
+        if (content == null || content.trim().isEmpty()) {
+            return;
+        }
+        reportQueue.submit(type, new PlayerEventPayload(
+                player.getUuid().toString(), player.getName(), System.currentTimeMillis(), content.trim()));
+    }
+
+    // ---------------------------------------------------------------- 群服互联（群 → 游戏）
+
+    /** 设置入站广播回调；实现方必须把调用切回服务器主线程。 */
+    public void setInboundBroadcast(java.util.function.Consumer<String> broadcast) {
+        this.inboundBroadcast = broadcast;
+    }
+
+    public void tickInbound() {
+        if (!canReport() || !config.isChatBridgeEnabled() || !config.isChatPollInbound()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastInboundPollAt < config.getChatPollIntervalMs()) {
+            return;
+        }
+        lastInboundPollAt = now;
+        CompletableFuture.runAsync(this::pollInbound);
+    }
+
+    private void pollInbound() {
+        YudreamApiClient client = apiClient;
+        BridgeConfig snapshot = config;
+        java.util.function.Consumer<String> broadcast = inboundBroadcast;
+        if (client == null || snapshot == null || broadcast == null) {
+            return;
+        }
+        try {
+            HttpResult result = client.inboundChat(inboundCursor);
+            if (!result.isSuccess()) {
+                return;
+            }
+            Map<String, Object> body = MiniJson.parseObject(result.getBody());
+            if (body == null) {
+                return;
+            }
+            long latest = MiniJson.longValue(body, "latest", inboundCursor);
+            // 首次拉取只快进游标：重启后不重播历史窗口内还留着的群消息
+            boolean fastForward = inboundCursor == 0L && latest > 0;
+            inboundCursor = Math.max(inboundCursor, latest);
+            Object rawMessages = body.get("messages");
+            if (!(rawMessages instanceof Collection) || fastForward) {
+                return;
+            }
+            for (Object item : (Collection<?>) rawMessages) {
+                if (!(item instanceof Map)) {
+                    continue;
+                }
+                Map<?, ?> message = (Map<?, ?>) item;
+                Object content = message.get("content");
+                if (content == null || String.valueOf(content).trim().isEmpty()) {
+                    continue;
+                }
+                long seq = message.get("seq") instanceof Number ? ((Number) message.get("seq")).longValue() : 0L;
+                inboundCursor = Math.max(inboundCursor, seq);
+                String line = snapshot.formatChatInbound(
+                        String.valueOf(message.get("sender")), String.valueOf(content));
+                broadcast.accept(line);
+            }
+        } catch (Exception e) {
+            logger.warn("YuDream inbound chat poll failed: " + e.getMessage());
+        }
     }
 
     public void markActive(PlayerIdentity player) {

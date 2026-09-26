@@ -24,6 +24,8 @@ public final class VelocitySettings {
     private final int snapshotIntervalSeconds;
     private final int probeIntervalSeconds;
     private final double moveActivityMinBlocks;
+    private final boolean chatBridgeEnabled;
+    private final int chatPollSeconds;
     private final List<String> admins;
     private final String commandPermission;
     private final List<String> blockedLoginNames;
@@ -36,6 +38,8 @@ public final class VelocitySettings {
         this.snapshotIntervalSeconds = (int) Math.max(builder.snapshotIntervalSeconds, 5L);
         this.probeIntervalSeconds = (int) Math.max(builder.probeIntervalSeconds, 5L);
         this.moveActivityMinBlocks = builder.moveActivityMinBlocks <= 0 ? 1.0D : builder.moveActivityMinBlocks;
+        this.chatBridgeEnabled = builder.chatBridgeEnabled;
+        this.chatPollSeconds = (int) Math.max(builder.chatPollSeconds, 3L);
         this.admins = Collections.unmodifiableList(new ArrayList<String>(builder.admins));
         this.commandPermission = builder.commandPermission == null || builder.commandPermission.trim().isEmpty()
                 ? "yudreammc.admin"
@@ -64,6 +68,8 @@ public final class VelocitySettings {
                 .moveActivityMinBlocks(rawMoveBlocks.isEmpty()
                         ? fallback.moveActivityMinBlocks
                         : parseDouble(rawMoveBlocks, fallback.moveActivityMinBlocks))
+                .chatBridgeEnabled(config.getBoolean("chat-bridge.enabled", fallback.chatBridgeEnabled))
+                .chatPollSeconds(config.getLong("chat-bridge.poll-seconds", fallback.chatPollSeconds))
                 .admins(config.getList("command.admins"))
                 .commandPermission(config.get("command.permission", fallback.commandPermission))
                 .blockedLoginNames(config.getList("login.blocked-names"))
@@ -79,6 +85,8 @@ public final class VelocitySettings {
         config.setIfAbsent("target.probe-interval-seconds", settings.probeIntervalSeconds);
         config.setIfAbsent("target.move-activity-min-blocks", settings.moveActivityMinBlocks);
         config.setIfAbsent("snapshot.interval-seconds", settings.snapshotIntervalSeconds);
+        config.setIfAbsent("chat-bridge.enabled", settings.chatBridgeEnabled);
+        config.setIfAbsent("chat-bridge.poll-seconds", settings.chatPollSeconds);
         config.setIfAbsent("command.permission", settings.commandPermission);
         config.setIfAbsent("command.admins", String.join(",", settings.admins));
         config.setIfAbsent("login.blocked-names", String.join(",", settings.blockedLoginNames));
@@ -126,6 +134,15 @@ public final class VelocitySettings {
         return moveActivityMinBlocks;
     }
 
+    /** 群服互联：是否从 Admin 拉取群消息并下发到目标后端广播。 */
+    public boolean chatBridgeEnabled() {
+        return chatBridgeEnabled;
+    }
+
+    public int chatPollSeconds() {
+        return chatPollSeconds;
+    }
+
     public List<String> admins() {
         return admins;
     }
@@ -156,6 +173,8 @@ public final class VelocitySettings {
                 .snapshotIntervalSeconds(snapshotIntervalSeconds)
                 .probeIntervalSeconds(probeIntervalSeconds)
                 .moveActivityMinBlocks(moveActivityMinBlocks)
+                .chatBridgeEnabled(chatBridgeEnabled)
+                .chatPollSeconds(chatPollSeconds)
                 .admins(admins)
                 .commandPermission(commandPermission)
                 .blockedLoginNames(blockedLoginNames)
@@ -172,6 +191,8 @@ public final class VelocitySettings {
         private int snapshotIntervalSeconds = 60;
         private int probeIntervalSeconds = 30;
         private double moveActivityMinBlocks = 1.0D;
+        private boolean chatBridgeEnabled = true;
+        private long chatPollSeconds = 3L;
         private List<String> admins = new ArrayList<String>();
         private String commandPermission = "yudreammc.admin";
         private List<String> blockedLoginNames = new ArrayList<String>();
@@ -208,6 +229,16 @@ public final class VelocitySettings {
 
         public Builder moveActivityMinBlocks(double value) {
             this.moveActivityMinBlocks = value;
+            return this;
+        }
+
+        public Builder chatBridgeEnabled(boolean value) {
+            this.chatBridgeEnabled = value;
+            return this;
+        }
+
+        public Builder chatPollSeconds(long value) {
+            this.chatPollSeconds = value;
             return this;
         }
 

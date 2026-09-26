@@ -2,6 +2,7 @@ package online.yudream.minecraft.bridge.fabric;
 
 import com.mojang.brigadier.CommandDispatcher;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
@@ -92,6 +93,10 @@ public final class FabricSensor {
             if (bridge.settings().isActivityChat()) {
                 forwardActivity(sender, BridgeMessage.SOURCE_CHAT);
             }
+            if (bridge.settings().isChatBridge()) {
+                // 群服互联：聊天原文转发给代理（与活动信号不同，每次都转发）
+                forwardGameEvent(BridgeMessage.KIND_CHAT, sender, message.signedContent());
+            }
         });
         ServerMessageEvents.COMMAND_MESSAGE.register((message, source, bound) -> {
             if (!bridge.settings().isActivityCommand()) {
@@ -101,6 +106,13 @@ public final class FabricSensor {
             if (player != null) {
                 forwardActivity(player, BridgeMessage.SOURCE_COMMAND);
             }
+        });
+        ServerLivingEntityEvents.AFTER_DEATH.register((entity, damageSource) -> {
+            if (!bridge.settings().isChatBridge() || !(entity instanceof ServerPlayer player)) {
+                return;
+            }
+            String deathMessage = player.getCombatTracker().getDeathMessage().getString();
+            forwardGameEvent(BridgeMessage.KIND_DEATH, player, deathMessage);
         });
 
         UseBlockCallback.EVENT.register((player, level, hand, hit) -> {
@@ -120,6 +132,8 @@ public final class FabricSensor {
 
         FabricLog.LOGGER.info("YuDream sensor installed; player activity is forwarded to the Velocity proxy on {}.",
                 BridgeProtocol.CHANNEL);
+        // Fabric API 没有成就达成事件，成就转发在 Fabric 传感器上不可用；聊天与死亡已覆盖。
+        FabricLog.LOGGER.info("Group-server bridge: chat and death events are forwarded; advancement forwarding is not available on Fabric (no Fabric API event).");
     }
 
     // ------------------------------------------------------------------ incoming
@@ -146,7 +160,22 @@ public final class FabricSensor {
             bridge.log().debug("Proxy bridge replied: protocol=" + ack.protocolVersion()
                     + ", accepting=" + ack.accepting()
                     + ", target=" + (ack.targetServer().isEmpty() ? "<unset>" : ack.targetServer()));
+        } else if (message instanceof BridgeMessage.GroupMessage groupMessage) {
+            broadcastGroupMessage(groupMessage, server);
         }
+    }
+
+    /** 群服互联入站：把代理下发的群消息按本机格式广播进游戏。 */
+    private void broadcastGroupMessage(BridgeMessage.GroupMessage message, MinecraftServer server) {
+        if (!bridge.settings().isChatBridge()) {
+            return;
+        }
+        String content = message.content();
+        if (content == null || content.trim().isEmpty()) {
+            return;
+        }
+        String line = bridge.settings().formatChatInbound(message.sender(), content);
+        server.getPlayerList().broadcastSystemMessage(Component.literal(line), false);
     }
 
     // ------------------------------------------------------------------ outgoing
@@ -230,6 +259,18 @@ public final class FabricSensor {
             return;
         }
         send(player, new BridgeMessage.Event("", kind, source, identity(player), System.currentTimeMillis()));
+    }
+
+    /** 群服互联：转发一条带原文的游戏事件；事件本身为空或被关闭时不发送。 */
+    private void forwardGameEvent(String kind, ServerPlayer player, String content) {
+        if (!bridge.settings().isEnabled()) {
+            return;
+        }
+        if (content == null || content.trim().isEmpty()) {
+            return;
+        }
+        send(player, new BridgeMessage.Event("", kind, null, identity(player),
+                System.currentTimeMillis(), content.trim()));
     }
 
     private void send(ServerPlayer player, BridgeMessage message) {

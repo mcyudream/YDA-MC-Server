@@ -18,6 +18,8 @@ public final class FabricSettings {
     private final boolean activityCommand;
     private final double moveMinBlocks;
     private final long activityMinIntervalMs;
+    private final boolean chatBridge;
+    private final String chatInboundFormat;
     private final boolean debug;
 
     private FabricSettings(Builder builder) {
@@ -29,7 +31,16 @@ public final class FabricSettings {
         this.activityCommand = builder.activityCommand;
         this.moveMinBlocks = builder.moveMinBlocks <= 0.0D ? 1.0D : builder.moveMinBlocks;
         this.activityMinIntervalMs = Math.max(builder.activityMinIntervalMs, 0L);
+        this.chatBridge = builder.chatBridge;
+        this.chatInboundFormat = normalizeFormat(builder.chatInboundFormat);
         this.debug = builder.debug;
+    }
+
+    private static String normalizeFormat(String value) {
+        String format = value == null ? "" : value.trim();
+        return format.contains("{sender}") || format.contains("{content}")
+                ? format
+                : "§8[§a群§8] §f{sender} §7» §f{content}";
     }
 
     public static FabricSettings defaults() {
@@ -58,6 +69,8 @@ public final class FabricSettings {
                 .activityCommand(config.getBoolean("activity.command", fallback.activityCommand))
                 .moveMinBlocks(moveMinBlocks)
                 .activityMinIntervalMs(config.getLong("activity.min-interval-seconds", fallback.activityMinIntervalMs / 1000L) * 1000L)
+                .chatBridge(config.getBoolean("chat-bridge.enabled", fallback.chatBridge))
+                .chatInboundFormat(config.get("chat-bridge.inbound-format", ""))
                 .debug(config.getBoolean("log.debug", fallback.debug))
                 .build();
     }
@@ -71,6 +84,8 @@ public final class FabricSettings {
         config.setIfAbsent("activity.command", settings.activityCommand);
         config.setIfAbsent("activity.move-min-blocks", Double.toString(settings.moveMinBlocks));
         config.setIfAbsent("activity.min-interval-seconds", settings.activityMinIntervalMs / 1000L);
+        config.setIfAbsent("chat-bridge.enabled", settings.chatBridge);
+        config.setIfAbsent("chat-bridge.inbound-format", settings.chatInboundFormat);
         config.setIfAbsent("log.debug", settings.debug);
     }
 
@@ -107,6 +122,22 @@ public final class FabricSettings {
         return activityMinIntervalMs;
     }
 
+    /** 群服互联：转发聊天/死亡事件并广播代理下发的群消息。 */
+    public boolean isChatBridge() {
+        return chatBridge;
+    }
+
+    /** 群消息广播格式；{sender} 为发送者标识，{content} 为消息内容。 */
+    public String formatChatInbound(String sender, String content) {
+        return chatInboundFormat
+                .replace("{sender}", sanitize(sender))
+                .replace("{content}", sanitize(content));
+    }
+
+    private static String sanitize(String value) {
+        return value == null ? "" : value.replace('§', '&');
+    }
+
     public boolean isDebug() {
         return debug;
     }
@@ -122,6 +153,8 @@ public final class FabricSettings {
         private boolean activityCommand = true;
         private double moveMinBlocks = 1.0D;
         private long activityMinIntervalMs = 10_000L;
+        private boolean chatBridge = true;
+        private String chatInboundFormat = "§8[§a群§8] §f{sender} §7» §f{content}";
         private boolean debug = false;
 
         public Builder enabled(boolean value) {
@@ -161,6 +194,16 @@ public final class FabricSettings {
 
         public Builder activityMinIntervalMs(long value) {
             this.activityMinIntervalMs = value;
+            return this;
+        }
+
+        public Builder chatBridge(boolean value) {
+            this.chatBridge = value;
+            return this;
+        }
+
+        public Builder chatInboundFormat(String value) {
+            this.chatInboundFormat = value;
             return this;
         }
 

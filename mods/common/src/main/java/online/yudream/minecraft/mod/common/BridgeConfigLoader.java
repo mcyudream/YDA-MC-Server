@@ -39,7 +39,12 @@ public final class BridgeConfigLoader {
                     longValue(properties, "afk.check-interval-seconds", 30L) * 1000L,
                     bool(properties, "startup.sync-online-on-start", true),
                     bool(properties, "shutdown.report-quit-on-stop", false),
-                    longValue(properties, "shutdown.flush-timeout-ms", 5000L)
+                    longValue(properties, "shutdown.flush-timeout-ms", 5000L),
+                    bool(properties, "chat-bridge.enabled", true),
+                    bool(properties, "chat-bridge.report-events", true),
+                    bool(properties, "chat-bridge.poll-inbound", true),
+                    longValue(properties, "chat-bridge.poll-interval-seconds", 3L) * 1000L,
+                    text(properties, "chat-bridge.inbound-format", "")
             );
         } catch (Exception e) {
             logger.warn("Failed to load YuDream config; using defaults: " + e.getMessage());
@@ -76,6 +81,10 @@ public final class BridgeConfigLoader {
         properties.setProperty("startup.sync-online-on-start", "true");
         properties.setProperty("shutdown.report-quit-on-stop", "false");
         properties.setProperty("shutdown.flush-timeout-ms", "5000");
+        properties.setProperty("chat-bridge.enabled", "true");
+        properties.setProperty("chat-bridge.report-events", "true");
+        properties.setProperty("chat-bridge.poll-inbound", "true");
+        properties.setProperty("chat-bridge.poll-interval-seconds", "3");
         try (OutputStream output = Files.newOutputStream(file)) {
             properties.store(output, "YuDream Minecraft server bridge config. API key is sent as X-API-Key and is never logged.");
         }

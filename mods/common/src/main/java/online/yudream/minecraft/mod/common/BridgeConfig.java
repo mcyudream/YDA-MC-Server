@@ -22,6 +22,11 @@ public final class BridgeConfig {
     private final boolean syncOnlineOnStart;
     private final boolean reportQuitOnStop;
     private final long flushTimeoutMs;
+    private final boolean chatBridgeEnabled;
+    private final boolean chatReportEvents;
+    private final boolean chatPollInbound;
+    private final long chatPollIntervalMs;
+    private final String chatInboundFormat;
 
     public BridgeConfig(boolean enabled,
                         String baseUrl,
@@ -42,7 +47,12 @@ public final class BridgeConfig {
                         long afkCheckIntervalMs,
                         boolean syncOnlineOnStart,
                         boolean reportQuitOnStop,
-                        long flushTimeoutMs) {
+                        long flushTimeoutMs,
+                        boolean chatBridgeEnabled,
+                        boolean chatReportEvents,
+                        boolean chatPollInbound,
+                        long chatPollIntervalMs,
+                        String chatInboundFormat) {
         this.enabled = enabled;
         this.baseUrl = stripTrailingSlash(baseUrl);
         this.serverId = trim(serverId);
@@ -63,6 +73,21 @@ public final class BridgeConfig {
         this.syncOnlineOnStart = syncOnlineOnStart;
         this.reportQuitOnStop = reportQuitOnStop;
         this.flushTimeoutMs = positive(flushTimeoutMs, 5000L);
+        this.chatBridgeEnabled = chatBridgeEnabled;
+        this.chatReportEvents = chatReportEvents;
+        this.chatPollInbound = chatPollInbound;
+        this.chatPollIntervalMs = Math.max(positive(chatPollIntervalMs, 3000L), 2000L);
+        this.chatInboundFormat = normalizeFormat(chatInboundFormat);
+    }
+
+    private static String normalizeFormat(String value) {
+        String format = trim(value);
+        if (format.isEmpty()) {
+            return "§8[§a群§8] §f{sender} §7» §f{content}";
+        }
+        return format.contains("{sender}") || format.contains("{content}")
+                ? format
+                : "§8[§a群§8] §f{sender} §7» §f{content}";
     }
 
     public static BridgeConfig defaults() {
@@ -70,7 +95,9 @@ public final class BridgeConfig {
                 5000, 8000, 3, 1500L, 1000,
                 false, false, true, true, false,
                 true, 300_000L, 30_000L,
-                true, false, 5000L);
+                true, false, 5000L,
+                true, true, true, 3000L,
+                "§8[§a群§8] §f{sender} §7» §f{content}");
     }
 
     public boolean isConfigured() {
@@ -155,6 +182,34 @@ public final class BridgeConfig {
 
     public long getFlushTimeoutMs() {
         return flushTimeoutMs;
+    }
+
+    public boolean isChatBridgeEnabled() {
+        return chatBridgeEnabled;
+    }
+
+    public boolean isChatReportEvents() {
+        return chatReportEvents;
+    }
+
+    public boolean isChatPollInbound() {
+        return chatPollInbound;
+    }
+
+    public long getChatPollIntervalMs() {
+        return chatPollIntervalMs;
+    }
+
+    /** 群消息广播格式；{sender} 为发送者标识，{content} 为消息内容。 */
+    public String formatChatInbound(String sender, String content) {
+        return chatInboundFormat
+                .replace("{sender}", sanitize(sender))
+                .replace("{content}", sanitize(content));
+    }
+
+    /** 群文本可能携带旧式 § 格式码，替换掉避免干扰游戏内聊天渲染。 */
+    private static String sanitize(String value) {
+        return value == null ? "" : value.replace('§', '&');
     }
 
     private static String trim(String value) {

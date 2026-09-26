@@ -28,10 +28,16 @@ public final class BridgeProtocol {
     public static final String TYPE_HELLO_ACK = "hello_ack";
     public static final String TYPE_PROBE = "probe";
     public static final String TYPE_EVENT = "event";
+    /** Proxy → sensor: a group-chat message that should be broadcast into this backend's game chat. */
+    public static final String TYPE_GROUP_MSG = "group_msg";
 
     public static final String KIND_JOIN = "join";
     public static final String KIND_QUIT = "quit";
     public static final String KIND_ACTIVITY = "activity";
+    /** Game events the proxy forwards to YuDream Admin for the group-server bridge. */
+    public static final String KIND_CHAT = "chat";
+    public static final String KIND_DEATH = "death";
+    public static final String KIND_ADVANCEMENT = "advancement";
 
     public static final String SOURCE_CHAT = "chat";
     public static final String SOURCE_MOVE = "move";
@@ -70,12 +76,18 @@ public final class BridgeProtocol {
     }
 
     /**
-     * One activity or presence report.
+     * One activity, presence or game-event report.
      *
      * <p>{@code join} and {@code quit} are advisory: the proxy owns presence and only uses them to
-     * repair a gap it missed. {@code activity} feeds the proxy-side AFK state machine.
+     * repair a gap it missed. {@code activity} feeds the proxy-side AFK state machine. {@code chat},
+     * {@code death} and {@code advancement} carry a {@code content} text the proxy reports to YuDream
+     * Admin for the group-server bridge.
      */
     public static byte[] encodeEvent(String kind, String source, PlayerEventPayload player, long at) {
+        return encodeEvent(kind, source, player, at, player == null ? null : player.getContent());
+    }
+
+    public static byte[] encodeEvent(String kind, String source, PlayerEventPayload player, long at, String content) {
         StringBuilder json = new StringBuilder(128);
         json.append("{\"t\":\"").append(TYPE_EVENT).append('"');
         json.append(",\"server\":\"\"");
@@ -84,10 +96,24 @@ public final class BridgeProtocol {
         if (source != null && !source.isEmpty()) {
             json.append(",\"source\":\"").append(JsonObjects.escape(source)).append('"');
         }
+        if (content != null && !content.isEmpty()) {
+            json.append(",\"content\":\"").append(JsonObjects.escape(content)).append('"');
+        }
         if (player != null) {
             json.append(",\"player\":{\"id\":\"").append(JsonObjects.escape(player.getPlayerId()))
                     .append("\",\"name\":\"").append(JsonObjects.escape(player.getPlayerName())).append("\"}");
         }
+        return bytes(json.append('}').toString());
+    }
+
+    /** Encodes a group message the proxy wants broadcast into this backend's game chat. */
+    public static byte[] encodeGroupMessage(String sender, String content, long at) {
+        StringBuilder json = new StringBuilder(64);
+        json.append("{\"t\":\"").append(TYPE_GROUP_MSG).append('"');
+        json.append(",\"protocol\":").append(PROTOCOL_VERSION);
+        json.append(",\"sender\":\"").append(JsonObjects.escape(sender)).append('"');
+        json.append(",\"content\":\"").append(JsonObjects.escape(content)).append('"');
+        json.append(",\"at\":").append(at);
         return bytes(json.append('}').toString());
     }
 
@@ -106,7 +132,7 @@ public final class BridgeProtocol {
             return null;
         }
         String type = MiniJson.string(root, "t", "");
-        if (!TYPE_PROBE.equals(type) && !TYPE_HELLO_ACK.equals(type)) {
+        if (!TYPE_PROBE.equals(type) && !TYPE_HELLO_ACK.equals(type) && !TYPE_GROUP_MSG.equals(type)) {
             return null;
         }
         return new Incoming(
@@ -114,7 +140,9 @@ public final class BridgeProtocol {
                 MiniJson.integer(root, "protocol", 0),
                 MiniJson.string(root, "proxy", ""),
                 MiniJson.bool(root, "accepting", true),
-                MiniJson.string(root, "target", ""));
+                MiniJson.string(root, "target", ""),
+                MiniJson.string(root, "sender", ""),
+                MiniJson.string(root, "content", ""));
     }
 
     private static byte[] bytes(String text) {
@@ -133,13 +161,18 @@ public final class BridgeProtocol {
         private final String proxyVersion;
         private final boolean accepting;
         private final String targetServer;
+        private final String sender;
+        private final String content;
 
-        private Incoming(String type, int protocolVersion, String proxyVersion, boolean accepting, String targetServer) {
+        private Incoming(String type, int protocolVersion, String proxyVersion, boolean accepting, String targetServer,
+                         String sender, String content) {
             this.type = type;
             this.protocolVersion = protocolVersion;
             this.proxyVersion = proxyVersion;
             this.accepting = accepting;
             this.targetServer = targetServer;
+            this.sender = sender;
+            this.content = content;
         }
 
         public String getType() {
@@ -163,12 +196,24 @@ public final class BridgeProtocol {
             return targetServer;
         }
 
+        public String getSender() {
+            return sender;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
         public boolean isProbe() {
             return TYPE_PROBE.equals(type);
         }
 
         public boolean isHelloAck() {
             return TYPE_HELLO_ACK.equals(type);
+        }
+
+        public boolean isGroupMessage() {
+            return TYPE_GROUP_MSG.equals(type);
         }
     }
 }

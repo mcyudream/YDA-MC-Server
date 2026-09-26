@@ -57,6 +57,24 @@ public class BridgeProtocolTest {
     }
 
     @Test
+    public void gameEventCarriesTheContent() {
+        PlayerEventPayload chat = new PlayerEventPayload(UUID, "Steve", AT, "大家好");
+        String expected = "{\"t\":\"event\",\"server\":\"\",\"kind\":\"chat\",\"at\":1783512000000,"
+                + "\"content\":\"大家好\",\"player\":{\"id\":\"" + UUID + "\",\"name\":\"Steve\"}}";
+        assertEquals(expected, text(BridgeProtocol.encodeEvent(BridgeProtocol.KIND_CHAT, null, chat, AT)));
+    }
+
+    @Test
+    public void groupMessageRoundTripsThroughDecode() {
+        byte[] encoded = BridgeProtocol.encodeGroupMessage("10086", "大家下午好", AT);
+        BridgeProtocol.Incoming incoming = BridgeProtocol.decode(encoded);
+        assertTrue(incoming.isGroupMessage());
+        assertFalse(incoming.isProbe());
+        assertEquals("10086", incoming.getSender());
+        assertEquals("大家下午好", incoming.getContent());
+    }
+
+    @Test
     public void playerNamesAreEscaped() {
         PlayerEventPayload awkward = new PlayerEventPayload(UUID, "a\"b\\c\nd", AT);
         String encoded = text(BridgeProtocol.encodeEvent(BridgeProtocol.KIND_JOIN, null, awkward, AT));

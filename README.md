@@ -16,9 +16,14 @@ This repository contains five artifacts that share the same remote API:
 | `yudream-velocity` | Velocity proxy plugin | Velocity 3.5.x, Java 21 |
 | `yudream_minecraft_server-fabric-26.2` | Fabric dedicated-server mod | Minecraft 26.2, Java 25 |
 
-The bridge reports join, quit, AFK start/end, and a full online-player snapshot.
+The bridge reports join, quit, AFK start/end, and a full online-player snapshot. Since 1.1.0 it also
+powers the group-server bridge: chat, death and advancement events are reported, and the bridge polls
+YuDream Admin for QQ-group messages to broadcast in game. What gets forwarded and to which group is
+configured per server in YuDream Admin; see the group-server bridge section below.
 
-桥接会上报进服、退服、开始挂机、结束挂机，以及完整在线玩家快照。
+桥接会上报进服、退服、开始挂机、结束挂机，以及完整在线玩家快照。自 1.1.0 起桥接同时支撑群服互联：
+上报聊天、死亡与成就事件，并轮询 YuDream Admin 拉取 QQ 群消息广播进游戏。转发哪些消息、发到哪个群
+在 YuDream Admin 逐服务器配置，见下方群服互联一节。
 
 The Bukkit plugin and the Forge/NeoForge mods each serve a single server on their own, and the Bukkit
 plugin can also join the proxy architecture as a sensor. The Velocity + Fabric pair is a separate
@@ -29,6 +34,48 @@ See [`bridge/README.md`](bridge/README.md).
 Bukkit 插件与 Forge/NeoForge 模组各自服务于单台服务器，其中 Bukkit 插件也能作为传感器加入代理架构。
 Velocity + Fabric 是面向代理网络的另一种部署形态：由代理插件负责上报，后端传感器只转发玩家活动，
 `target.server` 决定上报哪一台下游服务器。详见 [`bridge/README.md`](bridge/README.md)。
+
+- `mods/forge-1.20.1/build/libs/yudream_minecraft_server-forge-1.20.1-1.1.0.jar`
+- `mods/neoforge-1.21.1/build/libs/yudream_minecraft_server-neoforge-1.21.1-1.1.0.jar`
+
+## Group-server bridge / 群服互联
+
+Since 1.1.0 the bridge does more than track who is online. It also feeds the group-server bridge of
+the YuDream Admin `minecraft-server` plugin:
+
+- **Game → group**: chat messages, death messages and advancement completions are reported to Admin,
+  which formats and forwards them to the QQ group bound to that server in Admin. Join/quit notices are
+  generated entirely on the Admin side from the existing presence reports and additionally carry the
+  online-player count and the first three player names.
+- **Group → game**: messages posted in the bound QQ group are broadcast in game. In standalone
+  deployments each plugin/mod polls Admin's inbound queue directly; in the proxy architecture the
+  Velocity plugin polls once and delivers messages to the target backend over the bridge channel.
+
+What gets forwarded (and to which group) is configured per server in YuDream Admin
+(edit-server page → 群服互联). The local switches below only decide whether this server participates:
+
+自 1.1.0 起，桥接除了在线统计还支撑 YuDream Admin minecraft-server 插件的群服互联：
+
+- **游戏 → 群**：聊天、死亡与成就事件上报到 Admin，由 Admin 格式化后转发到该服务器绑定的 QQ 群；
+  进退服通知完全由 Admin 基于既有进退服上报生成，并附带当前在线人数与前三个玩家名。
+- **群 → 游戏**：绑定群里发送的消息会广播进游戏。直连部署（Bukkit/Forge/NeoForge）各自轮询
+  Admin 的入站队列；代理架构下由 Velocity 插件统一轮询并通过桥接通道下发给目标后端。
+
+转发项与目标群在 YuDream Admin 编辑服务器页逐服务器配置；以下本地开关只决定本机是否参与：
+
+```yaml
+chat-bridge:
+  enabled: true              # 本机总开关
+  report-events: true        # 上报聊天/死亡/成就（Bukkit）
+  poll-inbound: true         # 拉取群消息广播进游戏（直连部署）
+  poll-interval-seconds: 3
+  inbound-format: "§8[§a群§8] §f{sender} §7» §f{content}"
+```
+
+Advancement forwarding: Bukkit and the Forge/NeoForge mods support it. The Fabric sensor cannot
+(Fabric API has no advancement event); chat and death are covered there.
+
+成就转发：Bukkit 与 Forge/NeoForge 模组支持；Fabric 传感器不支持（Fabric API 没有成就事件），聊天与死亡照常。
 
 ## License / 许可证
 
@@ -62,6 +109,10 @@ The plugin and mods call:
 - `POST /api/plugins/minecraft-server/servers/{serverId}/players/afk/end`
 - `POST /api/plugins/minecraft-server/servers/{serverId}/players/snapshot`
 - `GET /api/plugins/minecraft-server/servers/{serverId}/players`
+- `POST /api/plugins/minecraft-server/servers/{serverId}/events/chat` (group-server bridge)
+- `POST /api/plugins/minecraft-server/servers/{serverId}/events/death` (group-server bridge)
+- `POST /api/plugins/minecraft-server/servers/{serverId}/events/advancement` (group-server bridge)
+- `GET /api/plugins/minecraft-server/servers/{serverId}/chat/inbound` (group-server bridge)
 
 Each POST body is:
 
@@ -137,9 +188,9 @@ On Paper 1.19/1.20+, the plugin also registers Paper's modern `AsyncChatEvent` w
 mvn clean package
 ```
 
-Put `target/yudream-minecraft-server-bukkit-1.0.0.jar` into the server `plugins` folder, start the server once, then edit:
+Put `target/yudream-minecraft-server-bukkit-1.1.0.jar` into the server `plugins` folder, start the server once, then edit:
 
-将 `target/yudream-minecraft-server-bukkit-1.0.0.jar` 放到服务端 `plugins` 目录，启动一次后再编辑：
+将 `target/yudream-minecraft-server-bukkit-1.1.0.jar` 放到服务端 `plugins` 目录，启动一次后再编辑：
 
 ```yaml
 base-url: "http://your-admin-host:8080"
@@ -178,8 +229,8 @@ Outputs:
 
 产物：
 
-- `mods/forge-1.20.1/build/libs/yudream_minecraft_server-forge-1.20.1-1.0.0.jar`
-- `mods/neoforge-1.21.1/build/libs/yudream_minecraft_server-neoforge-1.21.1-1.0.0.jar`
+- `mods/forge-1.20.1/build/libs/yudream_minecraft_server-forge-1.20.1-1.1.0.jar`
+- `mods/neoforge-1.21.1/build/libs/yudream_minecraft_server-neoforge-1.21.1-1.1.0.jar`
 
 ## Commands / 命令
 

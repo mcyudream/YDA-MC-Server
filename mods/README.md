@@ -95,6 +95,29 @@ http.log-failures=true
 http.log-payload=false
 ```
 
+### Group-server bridge / 群服互联
+
+The mods also join the group-server bridge: they report chat, death and advancement events, and poll
+the Admin queue to broadcast group-chat messages into the game. What gets forwarded and to which QQ
+group is configured per server in YuDream Admin (edit-server page → 群服互联); these local switches
+only decide whether this server participates:
+
+模组同样接入群服互联：上报聊天、死亡与成就事件，并轮询 Admin 队列把群消息广播进游戏。
+转发哪些消息、发到哪个群在 YuDream Admin 的编辑服务器页逐服务器配置；以下本地开关只决定本机是否参与：
+
+```properties
+chat-bridge.enabled=true
+chat-bridge.report-events=true
+chat-bridge.poll-inbound=true
+chat-bridge.poll-interval-seconds=3
+chat-bridge.inbound-format=\u00a78[\u00a7a群\u00a78] \u00a7f{sender} \u00a77» \u00a7f{content}
+```
+
+Advancement forwarding works on Forge and NeoForge. On Fabric it is unavailable because Fabric API
+has no advancement event; chat and death are covered.
+
+成就转发在 Forge / NeoForge 上可用；Fabric API 没有成就事件，Fabric 传感器不支持成就转发，聊天与死亡照常。
+
 ## Commands
 
 - `/yudreammc reload`

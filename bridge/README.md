@@ -6,8 +6,8 @@ A proxy-side architecture for reporting one downstream server's player activity 
 
 | Artifact / 产物 | Platform / 平台 | Target / 目标 |
 |---|---|---|
-| `yudream-velocity-1.0.0.jar` | Velocity proxy plugin | Velocity 3.5.x, Java 21 |
-| `yudream_minecraft_server-fabric-26.2-1.0.0.jar` | Fabric dedicated-server mod | Minecraft 26.2, Java 25 |
+| `yudream-velocity-1.1.0.jar` | Velocity proxy plugin | Velocity 3.5.x, Java 21 |
+| `yudream_minecraft_server-fabric-26.2-1.1.0.jar` | Fabric dedicated-server mod | Minecraft 26.2, Java 25 |
 
 The proxy plugin is the only component that talks to YuDream Admin. A backend sensor only observes the
 server it is installed on and forwards events to the proxy over a plugin message channel.
@@ -89,8 +89,8 @@ cd bridge
 
 Outputs / 产物：
 
-- `bridge/velocity/build/libs/yudream-velocity-1.0.0.jar`
-- `bridge/fabric-26.2/build/libs/yudream_minecraft_server-fabric-26.2-1.0.0.jar`
+- `bridge/velocity/build/libs/yudream-velocity-1.1.0.jar`
+- `bridge/fabric-26.2/build/libs/yudream_minecraft_server-fabric-26.2-1.1.0.jar`
 
 Repository mirrors can be overridden without editing the build files, matching `mods/settings.gradle`:
 
@@ -115,13 +115,13 @@ queue, the AFK state machine and the bridge protocol. It is compiled into both a
 
 Proxy / 代理：
 
-1. Put `yudream-velocity-1.0.0.jar` in `plugins/` on the Velocity proxy.
+1. Put `yudream-velocity-1.1.0.jar` in `plugins/` on the Velocity proxy.
 2. Start once; `plugins/yudream-velocity/config.properties` is created.
 3. Fill in `api.base-url`, `api.server-id`, `api.api-key` and `target.server`.
 
 Backend / 后端（`target.server` 指向的那台必须装）：
 
-1. Put `yudream_minecraft_server-fabric-26.2-1.0.0.jar` in `mods/` and install Fabric API.
+1. Put `yudream_minecraft_server-fabric-26.2-1.1.0.jar` in `mods/` and install Fabric API.
 2. Start once; `config/yudream-bridge.properties` is created. Nothing else is required.
 
 Both sides must also be reachable by plugin messaging, which needs no extra configuration on Velocity.
@@ -145,6 +145,8 @@ Both sides must also be reachable by plugin messaging, which needs no extra conf
 | `target.probe-interval-seconds` | `30` | How often the proxy asks the target's sensors to re-announce themselves. |
 | `target.move-activity-min-blocks` | `1.0` | Documented proxy-side default; the sensor's own value wins. |
 | `snapshot.interval-seconds` | `60` | Full online-player snapshot interval. |
+| `chat-bridge.enabled` | `true` | Group-server bridge: poll Admin's inbound group-message queue and deliver it to the target backend. |
+| `chat-bridge.poll-seconds` | `3` | Inbound group-message poll interval. |
 | `http.connect-timeout-ms` / `http.read-timeout-ms` | `5000` / `8000` | HTTP timeouts. |
 | `http.retry-attempts` / `http.retry-delay-ms` | `3` / `1500` | Retry policy per report. |
 | `http.queue-capacity` | `1000` | Bounded queue; overflow is dropped with a warning. |
@@ -173,6 +175,8 @@ Both sides must also be reachable by plugin messaging, which needs no extra conf
 | `activity.chat` / `activity.move` / `activity.interact` / `activity.command` | `true` | Which local signals count as activity. |
 | `activity.move-min-blocks` | `1.0` | Movement threshold in blocks. |
 | `activity.min-interval-seconds` | `10` | Shortest gap between two forwarded signals for one player. |
+| `chat-bridge.enabled` | `true` | Group-server bridge: forward chat/death events to the proxy and broadcast proxy-delivered group messages in game. |
+| `chat-bridge.inbound-format` | `§8[§a群§8] §f{sender} §7» §f{content}` | Broadcast format; `{sender}` is the platform sender id, `{content}` the message. |
 | `log.debug` | `false` | Log each forwarded signal. |
 
 ## Commands / 指令

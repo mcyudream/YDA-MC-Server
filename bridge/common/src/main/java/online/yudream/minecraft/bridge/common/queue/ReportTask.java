@@ -56,10 +56,14 @@ public record ReportTask(String id,
         } else {
             node.put("type", type.getRemotePath());
             node.put("server", serverName == null ? "" : serverName);
-            node.put("player", JsonValue.object()
+            JsonValue player = JsonValue.object()
                     .put("playerId", payload.playerId())
                     .put("playerName", payload.playerName())
-                    .put("eventAt", payload.eventAt()));
+                    .put("eventAt", payload.eventAt());
+            if (payload.content() != null && !payload.content().isEmpty()) {
+                player.put("content", payload.content());
+            }
+            node.put("player", player);
         }
         return node;
     }
@@ -105,7 +109,8 @@ public record ReportTask(String id,
                 playerId,
                 player.getOr("playerName", JsonValue.of("")).asString(""),
                 player.getOr("eventAt", JsonValue.of(0L)).asLong(0L),
-                serverName);
+                serverName,
+                player.has("content") ? player.get("content").asString(null) : null);
         return new ReportTask(id, false, type, payload, null, payload.eventAt(), serverName);
     }
 
@@ -118,7 +123,7 @@ public record ReportTask(String id,
         }
         StringBuilder message = new StringBuilder();
         message.append("type=").append(type);
-        message.append(", endpoint=/players/").append(type.getRemotePath());
+        message.append(", endpoint=/").append(type.getRemotePath());
         message.append(", player=").append(payload.playerName());
         if (serverName != null) {
             message.append(", server=").append(serverName);
@@ -126,6 +131,9 @@ public record ReportTask(String id,
         if (includePayload) {
             message.append(", playerId=").append(payload.playerId());
             message.append(", eventAt=").append(payload.eventAt());
+            if (payload.content() != null) {
+                message.append(", content=").append(payload.content());
+            }
         }
         return message.toString();
     }

@@ -113,7 +113,7 @@ public class AfkTrackerTest {
         });
         capturing.markOnline(PLAYER, 0L);
         capturing.tick(List.of(PLAYER), SERVER, 10L, settings);
-        assertEquals(List.of("afk/start"), transitions);
+        assertEquals(List.of("players/afk/start"), transitions);
         assertEquals(1, payloads.size());
         assertEquals("survival", payloads.get(0).serverName());
         assertEquals(PLAYER.uuidString(), payloads.get(0).playerId());

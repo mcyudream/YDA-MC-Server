@@ -2,6 +2,7 @@ package online.yudream.minecraft.forge;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import net.minecraft.advancements.DisplayInfo;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
@@ -13,6 +14,8 @@ import net.minecraftforge.event.CommandEvent;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.ServerChatEvent;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.entity.living.LivingDeathEvent;
+import net.minecraftforge.event.entity.player.AdvancementEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.event.server.ServerStartedEvent;
@@ -21,6 +24,7 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.loading.FMLPaths;
 import online.yudream.minecraft.mod.common.LogSink;
+import online.yudream.minecraft.mod.common.PlayerEventType;
 import online.yudream.minecraft.mod.common.PlayerIdentity;
 import online.yudream.minecraft.mod.common.YudreamBridgeService;
 import org.slf4j.Logger;
@@ -54,6 +58,9 @@ public final class YudreamForgeMod {
     public void onServerStarted(ServerStartedEvent event) {
         server = event.getServer();
         service.start();
+        // 群服互联入站：群消息异步拉取后切回主线程广播给全体玩家
+        service.setInboundBroadcast(line -> server.execute(() ->
+                server.getPlayerList().broadcastSystemMessage(Component.literal(line), false)));
         if (service.shouldSyncOnlineOnStart()) {
             service.syncOnline(onlinePlayers());
         }
@@ -96,11 +103,34 @@ public final class YudreamForgeMod {
             }
         }
         service.tick(onlinePlayers());
+        service.tickInbound();
     }
 
     @SubscribeEvent
     public void onChat(ServerChatEvent event) {
         service.markActive(identity(event.getPlayer()));
+        // 群服互联：聊天原文上报（Admin 侧配置决定是否转发）
+        service.reportGameEvent(PlayerEventType.CHAT, identity(event.getPlayer()), event.getMessage().getString());
+    }
+
+    @SubscribeEvent
+    public void onLivingDeath(LivingDeathEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            service.reportGameEvent(PlayerEventType.DEATH, identity(player),
+                    player.getCombatTracker().getDeathMessage().getString());
+        }
+    }
+
+    @SubscribeEvent
+    public void onAdvancement(AdvancementEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) {
+            return;
+        }
+        DisplayInfo display = event.getAdvancement().getDisplay();
+        if (display == null || !display.shouldAnnounceChat()) {
+            return;
+        }
+        service.reportGameEvent(PlayerEventType.ADVANCEMENT, identity(player), display.getTitle().getString());
     }
 
     @SubscribeEvent

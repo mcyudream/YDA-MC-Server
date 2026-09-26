@@ -21,10 +21,16 @@ public sealed interface BridgeMessage {
     String TYPE_HELLO_ACK = "hello_ack";
     String TYPE_PROBE = "probe";
     String TYPE_EVENT = "event";
+    /** Proxy → sensor: a group-chat message that should be broadcast into the backend's game chat. */
+    String TYPE_GROUP_MSG = "group_msg";
 
     String KIND_JOIN = "join";
     String KIND_QUIT = "quit";
     String KIND_ACTIVITY = "activity";
+    /** Game events the proxy reports to YuDream Admin for the group-server bridge. */
+    String KIND_CHAT = "chat";
+    String KIND_DEATH = "death";
+    String KIND_ADVANCEMENT = "advancement";
 
     String SOURCE_CHAT = "chat";
     String SOURCE_MOVE = "move";
@@ -77,16 +83,23 @@ public sealed interface BridgeMessage {
     }
 
     /**
-     * A backend activity report.
+     * A backend activity, presence or game-event report.
      *
      * <p>{@code join} / {@code quit} are informational: the proxy owns presence and only uses these
      * to confirm the sensor is alive. {@code activity} feeds the proxy-side AFK state machine.
+     * {@code chat} / {@code death} / {@code advancement} carry a {@code content} text the proxy
+     * reports to YuDream Admin for the group-server bridge.
      */
     record Event(String serverName,
                  String kind,
                  String source,
                  PlayerIdentity player,
-                 long at) implements BridgeMessage {
+                 long at,
+                 String content) implements BridgeMessage {
+
+        public Event(String serverName, String kind, String source, PlayerIdentity player, long at) {
+            this(serverName, kind, source, player, at, null);
+        }
 
         @Override
         public String type() {
@@ -103,12 +116,37 @@ public sealed interface BridgeMessage {
             if (source != null) {
                 body.put("source", source);
             }
+            if (content != null && !content.isEmpty()) {
+                body.put("content", content);
+            }
             if (player != null) {
                 body.put("player", JsonValue.object()
                         .put("id", player.uuidString())
                         .put("name", player.name()));
             }
             return body;
+        }
+    }
+
+    /**
+     * Sent by the proxy to a backend: one group-chat message to broadcast into the game chat.
+     *
+     * <p>{@code sender} is the platform-side sender identity (a QQ id, not a player name).
+     */
+    record GroupMessage(String sender, String content, long at) implements BridgeMessage {
+
+        @Override
+        public String type() {
+            return TYPE_GROUP_MSG;
+        }
+
+        @Override
+        public JsonValue toJson() {
+            return JsonValue.object()
+                    .put("t", TYPE_GROUP_MSG)
+                    .put("sender", sender)
+                    .put("content", content)
+                    .put("at", at);
         }
     }
 

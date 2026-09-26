@@ -22,6 +22,7 @@ import online.yudream.minecraft.bridge.common.config.BridgeSettings;
 import online.yudream.minecraft.bridge.common.config.ConfigFile;
 import online.yudream.minecraft.bridge.common.http.HttpResult;
 import online.yudream.minecraft.bridge.common.http.YudreamApiClient;
+import online.yudream.minecraft.bridge.common.json.JsonValue;
 import online.yudream.minecraft.bridge.common.log.LogSink;
 import online.yudream.minecraft.bridge.common.model.PlayerEventPayload;
 import online.yudream.minecraft.bridge.common.model.PlayerEventType;
@@ -81,7 +82,7 @@ public final class YudreamVelocityPlugin {
 
     public static final String PLUGIN_ID = "yudream-velocity";
     /** Keep in sync with the {@code version} above; the annotation needs a literal. */
-    public static final String VERSION = "1.0.0";
+    public static final String VERSION = "1.1.0";
 
     private static final String CONFIG_FILE_NAME = "config.properties";
 
@@ -108,6 +109,9 @@ public final class YudreamVelocityPlugin {
     private ScheduledTask snapshotTask;
     private ScheduledTask afkTask;
     private ScheduledTask probeTask;
+    private ScheduledTask inboundChatTask;
+    /** 群服互联入站游标：Admin 队列里已取到的最大序号。 */
+    private volatile long inboundChatCursor;
     private boolean warnedAboutTarget;
     private boolean warnedAboutSensor;
 
@@ -311,6 +315,101 @@ public final class YudreamVelocityPlugin {
                 return;
             }
             afkTracker.markActive(player, serverName, event.at() > 0 ? event.at() : System.currentTimeMillis(), settings.bridge());
+            return;
+        }
+        // 群服互联：聊天/死亡/成就原样上报，转发与否由 Admin 侧逐服务器配置
+        PlayerEventType gameEvent = gameEventKind(kind);
+        if (gameEvent != null && event.content() != null && !event.content().isEmpty() && canReport()) {
+            reportQueue.submit(gameEvent, PlayerEventPayload.of(player,
+                    event.at() > 0 ? event.at() : System.currentTimeMillis(), serverName, event.content()));
+        }
+    }
+
+    private PlayerEventType gameEventKind(String kind) {
+        if (BridgeMessage.KIND_CHAT.equals(kind)) {
+            return PlayerEventType.CHAT;
+        }
+        if (BridgeMessage.KIND_DEATH.equals(kind)) {
+            return PlayerEventType.DEATH;
+        }
+        if (BridgeMessage.KIND_ADVANCEMENT.equals(kind)) {
+            return PlayerEventType.ADVANCEMENT;
+        }
+        return null;
+    }
+
+    // ------------------------------------------------------------------ 群服互联（群 → 游戏）
+
+    /**
+     * 从 Admin 拉取绑定群聊的消息并转发给目标后端的传感器广播。
+     *
+     * <p>绑定关系（发到哪个群、转发哪些消息）完全由 Admin 侧配置；代理只负责把 Admin
+     * 为该服务器准备的消息送到目标后端。
+     */
+    private void pollInboundChat() {
+        if (!settings.chatBridgeEnabled() || !canReport()) {
+            return;
+        }
+        final YudreamApiClient client = apiClient;
+        long cursor = inboundChatCursor;
+        HttpResult result;
+        try {
+            result = client.inboundChat(cursor);
+        } catch (IOException e) {
+            log.debug("Inbound chat poll failed: " + e.getMessage());
+            return;
+        }
+        if (!result.isSuccess()) {
+            return;
+        }
+        JsonValue body;
+        try {
+            body = JsonValue.parse(result.body());
+        } catch (online.yudream.minecraft.bridge.common.json.JsonSyntaxException e) {
+            return;
+        }
+        if (!body.isObject()) {
+            return;
+        }
+        inboundChatCursor = Math.max(inboundChatCursor, body.getOr("latest", JsonValue.of(cursor)).asLong(cursor));
+        List<BridgeMessage.GroupMessage> messages = new ArrayList<BridgeMessage.GroupMessage>();
+        // 首次拉取只快进游标：代理重启后不把历史窗口内还留着的群消息再投给后端
+        if (cursor == 0L && inboundChatCursor > 0) {
+            return;
+        }
+        for (JsonValue entry : body.getOr("messages", JsonValue.array()).items()) {
+            if (!entry.isObject()) {
+                continue;
+            }
+            String content = entry.getOr("content", JsonValue.of("")).asString("");
+            if (content.trim().isEmpty()) {
+                continue;
+            }
+            long seq = entry.getOr("seq", JsonValue.of(0L)).asLong(0L);
+            inboundChatCursor = Math.max(inboundChatCursor, seq);
+            messages.add(new BridgeMessage.GroupMessage(
+                    entry.getOr("sender", JsonValue.of("")).asString(""),
+                    content,
+                    entry.getOr("at", JsonValue.of(0L)).asLong(0L)));
+        }
+        for (BridgeMessage.GroupMessage message : messages) {
+            deliverToTarget(BridgeProtocol.encode(message));
+        }
+    }
+
+    /** Sends a payload over any player connection to the target backend, like {@link #probeTarget()}. */
+    private void deliverToTarget(byte[] payload) {
+        String target = settings.targetServer();
+        if (target.isEmpty()) {
+            return;
+        }
+        for (Player player : server.getAllPlayers()) {
+            Optional<ServerConnection> connection = player.getCurrentServer();
+            if (connection.isEmpty() || !target.equals(connection.get().getServerInfo().getName())) {
+                continue;
+            }
+            connection.get().sendPluginMessage(channel, payload);
+            return;
         }
     }
 
@@ -506,10 +605,13 @@ public final class YudreamVelocityPlugin {
         probeTask = server.getScheduler().buildTask(this, this::probeTarget)
                 .repeat(Duration.ofSeconds(settings.probeIntervalSeconds()))
                 .schedule();
+        inboundChatTask = server.getScheduler().buildTask(this, this::pollInboundChat)
+                .repeat(Duration.ofSeconds(settings.chatPollSeconds()))
+                .schedule();
     }
 
     private void cancelTasks() {
-        for (ScheduledTask task : new ScheduledTask[]{snapshotTask, afkTask, probeTask}) {
+        for (ScheduledTask task : new ScheduledTask[]{snapshotTask, afkTask, probeTask, inboundChatTask}) {
             if (task != null) {
                 task.cancel();
             }
@@ -517,6 +619,7 @@ public final class YudreamVelocityPlugin {
         snapshotTask = null;
         afkTask = null;
         probeTask = null;
+        inboundChatTask = null;
     }
 
     /**
