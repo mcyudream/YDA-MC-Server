@@ -19,6 +19,10 @@ import java.util.logging.Level;
  * <p>所有 HTTP 与 JSON 解析都在异步线程执行（不碰 Bukkit API），广播切回主线程。
  * 游标只保存在内存里：重启后游标归零，只会重复最近几分钟内的群消息（Admin 侧队列
  * 只保留 10 分钟内的消息），影响可忽略。
+ *
+ * <p>2026-09-28 加固：{@link #poll()} 全量兜底捕获——此前任何 RuntimeException
+ * （JSON 解析、插件停用中的广播调度等）都会炸掉调度任务，入站从此静默停摆
+ * （游戏收不到群消息且控制台一片安静）；并补齐连接成功/转发成功/跳过原因日志。
  */
 public final class InboundChatPoller {
 
@@ -28,6 +32,9 @@ public final class InboundChatPoller {
     private final AtomicBoolean streaming = new AtomicBoolean(false);
     private long cursor;
     private long lastFailureLogAt;
+    private long lastConnectedLogAt;
+    private long lastCrashLogAt;
+    private boolean loggedGateSkip;
 
     public InboundChatPoller(YudreamMinecraftPlugin plugin) {
         this.plugin = plugin;
@@ -35,10 +42,29 @@ public final class InboundChatPoller {
 
     /** 由异步循环任务调用；所有失败都折叠成日志，绝不抛出。 */
     public void poll() {
+        try {
+            pollUnsafe();
+        } catch (Throwable error) {
+            // 任何未预期异常（JSON 解析、插件停用中的广播调度等 RuntimeException）都
+            // 不能炸掉调度任务——任务一死入站就静默停摆。
+            long now = System.currentTimeMillis();
+            if (now - lastCrashLogAt >= LOG_THROTTLE_MS) {
+                lastCrashLogAt = now;
+                plugin.getLogger().log(Level.SEVERE, "群服互联入站任务异常（已捕获，任务继续运行）", error);
+            }
+        }
+    }
+
+    private void pollUnsafe() {
         if (!plugin.canReport()) {
             // 下游模式由代理统一拉取并通过插件消息通道下发；本机无凭据时不轮询。
+            if (!loggedGateSkip) {
+                loggedGateSkip = true;
+                plugin.getLogger().info("群服互联入站跳过：本机无上报凭据或处于下游代理模式（由代理统一拉取）。");
+            }
             return;
         }
+        loggedGateSkip = false;
         // 优先 SSE 长连接：群消息即到即推；连不上（旧宿主/网络）再退回轮询
         if (!streaming.compareAndSet(false, true)) {
             return;
@@ -61,6 +87,7 @@ public final class InboundChatPoller {
         InboundChatSse.read(plugin.getApiClient().inboundChatStream(cursor), new InboundChatSse.Listener() {
             @Override
             public void onConnected(long latest) {
+                logConnected(latest);
                 // 首连快进：重启后不重播历史窗口内还留着的群消息
                 if (cursor == 0L && latest > 0) {
                     cursor = latest;
@@ -73,6 +100,7 @@ public final class InboundChatPoller {
                     return;
                 }
                 cursor = seq;
+                plugin.getLogger().info("已转发群消息 #" + seq + " " + sender + "：" + abbreviate(content));
                 broadcast(sender, content);
             }
         });
@@ -116,6 +144,7 @@ public final class InboundChatPoller {
             String sender = String.valueOf(message.get("sender"));
             broadcasts.add(new Broadcast(seq, sender, String.valueOf(content)));
             cursor = Math.max(cursor, seq);
+            plugin.getLogger().info("已转发群消息 #" + seq + " " + sender + "：" + abbreviate(String.valueOf(content)));
         }
         if (broadcasts.isEmpty()) {
             return;
@@ -143,6 +172,15 @@ public final class InboundChatPoller {
         });
     }
 
+    private void logConnected(long latest) {
+        long now = System.currentTimeMillis();
+        if (now - lastConnectedLogAt < LOG_THROTTLE_MS) {
+            return;
+        }
+        lastConnectedLogAt = now;
+        plugin.getLogger().info("群聊实时推送已连接（服务端最新序号 " + latest + "），群消息将实时转发进游戏。");
+    }
+
     private void logFailure(String message) {
         long now = System.currentTimeMillis();
         if (now - lastFailureLogAt < LOG_THROTTLE_MS) {
@@ -150,6 +188,11 @@ public final class InboundChatPoller {
         }
         lastFailureLogAt = now;
         plugin.getLogger().log(Level.WARNING, "群服互联入站拉取：" + message);
+    }
+
+    private static String abbreviate(String content) {
+        String flat = content.replace("\n", " ").trim();
+        return flat.length() <= 40 ? flat : flat.substring(0, 40) + "…";
     }
 
     private static final class Broadcast {

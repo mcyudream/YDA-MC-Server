@@ -155,6 +155,10 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
     private void startInboundPoller() {
         stopInboundPoller();
         if (!settings.isEnabled() || !settings.getChatBridge().isEnabled() || !settings.getChatBridge().isPollInbound()) {
+            String reason = !settings.isEnabled()
+                    ? "bridge 总开关关闭"
+                    : (!settings.getChatBridge().isEnabled() ? "chat-bridge 未启用" : "poll-inbound 未启用");
+            getLogger().info("群服互联入站未启动：" + reason + "。");
             return;
         }
         if (inboundPoller == null) {
@@ -162,12 +166,15 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
         }
         inboundPollTaskId = getServer().getScheduler().runTaskTimerAsynchronously(
                 this, (Runnable) () -> inboundPoller.poll(), 20L * 10L, settings.getChatBridge().getPollIntervalTicks()).getTaskId();
+        getLogger().info("群服互联入站已启动：实时推送优先，轮询兜底（间隔 "
+                + (settings.getChatBridge().getPollIntervalTicks() / 20L) + " 秒）。");
     }
 
     private void stopInboundPoller() {
         if (inboundPollTaskId >= 0) {
             getServer().getScheduler().cancelTask(inboundPollTaskId);
             inboundPollTaskId = -1;
+            getLogger().info("群服互联入站已停止。");
         }
     }
 
