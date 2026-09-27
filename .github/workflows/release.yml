@@ -43,6 +43,7 @@ jobs:
           gradle-version: '9.5.1'
       - name: Build Velocity plugin and Fabric sensor (includes :core tests)
         run: gradle build
+        working-directory: bridge
       - uses: actions/upload-artifact@v4
         with:
           name: bridge
@@ -65,6 +66,7 @@ jobs:
           gradle-version: '8.10.2'
       - name: Build Forge and NeoForge mods (includes shared core sources)
         run: gradle build
+        working-directory: mods
       - uses: actions/upload-artifact@v4
         with:
           name: mods
