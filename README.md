@@ -14,7 +14,7 @@ This repository contains five artifacts that share the same remote API:
 | `yudream_minecraft_server-forge-1.20.1` | Forge dedicated-server mod | Minecraft 1.20.1, Java 17 |
 | `yudream_minecraft_server-neoforge-1.21.1` | NeoForge dedicated-server mod | Minecraft 1.21.1, Java 21 |
 | `yudream-velocity` | Velocity proxy plugin | Velocity 3.5.x, Java 21 |
-| `yudream_minecraft_server-fabric-26.2` | Fabric dedicated-server mod | Minecraft 26.2, Java 25 |
+| `yudream_minecraft_server-fabric-26.2` | Fabric dedicated-server mod | Minecraft 26.2, Java 25. Two modes: standalone or proxy backend sensor |
 
 The bridge reports join, quit, AFK start/end, and a full online-player snapshot. Since 1.1.0 it also
 powers the group-server bridge: chat, death and advancement events are reported, and the bridge polls
@@ -26,14 +26,14 @@ configured per server in YuDream Admin; see the group-server bridge section belo
 在 YuDream Admin 逐服务器配置，见下方群服互联一节。
 
 The Bukkit plugin and the Forge/NeoForge mods each serve a single server on their own, and the Bukkit
-plugin can also join the proxy architecture as a sensor. The Velocity + Fabric pair is a separate
-deployment shape for proxy networks: the proxy plugin uploads, the backend sensors only forward
-activity, and `target.server` selects which downstream server is reported.
+plugin and the Fabric mod can each join the proxy architecture as a sensor instead. The Velocity +
+Fabric pair is a deployment shape for proxy networks: the proxy plugin uploads, the backend sensors
+only forward activity, and every downstream server is reported as its own sub-server.
 See [`bridge/README.md`](bridge/README.md).
 
-Bukkit 插件与 Forge/NeoForge 模组各自服务于单台服务器，其中 Bukkit 插件也能作为传感器加入代理架构。
-Velocity + Fabric 是面向代理网络的另一种部署形态：由代理插件负责上报，后端传感器只转发玩家活动，
-`target.server` 决定上报哪一台下游服务器。详见 [`bridge/README.md`](bridge/README.md)。
+Bukkit 插件与 Forge/NeoForge 模组各自服务于单台服务器；Bukkit 插件与 Fabric 模组也都能改为传感器加入代理架构。
+Velocity + Fabric 是面向代理网络的一种部署形态：由代理插件负责上报，后端传感器只转发玩家活动，
+每一台下游服务器都作为独立的子服上报。
 
 - `mods/forge-1.20.1/build/libs/yudream_minecraft_server-forge-1.20.1-1.1.0.jar`
 - `mods/neoforge-1.21.1/build/libs/yudream_minecraft_server-neoforge-1.21.1-1.1.0.jar`

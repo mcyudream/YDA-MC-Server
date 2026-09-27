@@ -10,11 +10,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * Backend sensor for the YuDream bridge.
+ * YuDream bridge for a Fabric server, running in one of two modes.
  *
- * <p>This mod never talks to YuDream Admin. It observes player activity on the backend it is
- * installed on and forwards it to the Velocity proxy over the {@code yudream:bridge} plugin message
- * channel; the proxy owns presence, AFK state and every HTTP call.
+ * <p>In {@code downstream} mode (the default) this mod never talks to YuDream Admin: it observes
+ * player activity on the backend it is installed on and forwards it to the Velocity proxy over the
+ * {@code yudream:bridge} plugin message channel, and the proxy owns presence, AFK state and every
+ * HTTP call.
+ *
+ * <p>In {@code standalone} mode there is no proxy. The mod reports to Admin itself, using the same
+ * report queue the proxy uses, so a single Fabric server shows up in Admin exactly like a single
+ * Bukkit server does.
  *
  * <p>It is a {@link DedicatedServerModInitializer} rather than a plain {@code ModInitializer}
  * because {@code fabric.mod.json} registers it under the {@code server} entrypoint, which requires
@@ -27,7 +32,7 @@ public final class YudreamFabricMod implements DedicatedServerModInitializer {
 
     private static FabricBridge bridge;
 
-    /** The running sensor state, or {@code null} before the entrypoint runs. */
+    /** The running bridge state, or {@code null} before the entrypoint runs. */
     public static FabricBridge bridge() {
         return bridge;
     }
@@ -47,11 +52,20 @@ public final class YudreamFabricMod implements DedicatedServerModInitializer {
             file.save(configPath);
             settings = FabricSettings.from(file);
         } catch (IOException e) {
-            FabricLog.LOGGER.warn("Could not read the YuDream sensor config at {}; using defaults.", configPath, e);
+            FabricLog.LOGGER.warn("Could not read the YuDream bridge config at {}; using defaults.", configPath, e);
             settings = FabricSettings.defaults();
         }
 
-        bridge = new FabricBridge(settings, configPath, new FabricLogSink(settings.isDebug()));
+        Path dataDirectory = FabricPaths.dataDirectory();
+        try {
+            Files.createDirectories(dataDirectory);
+        } catch (IOException e) {
+            // Standalone mode persists its report queue here; downstream mode never writes it. A
+            // failure is worth reporting but must not stop the server from starting.
+            FabricLog.LOGGER.warn("Could not create the YuDream bridge data directory {}.", dataDirectory, e);
+        }
+
+        bridge = new FabricBridge(settings, configPath, dataDirectory, new FabricLogSink(settings.isDebug()));
         bridge.start();
         new FabricSensor(bridge).install();
     }
