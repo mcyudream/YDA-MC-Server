@@ -166,8 +166,10 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
         }
         inboundPollTaskId = getServer().getScheduler().runTaskTimerAsynchronously(
                 this, (Runnable) () -> inboundPoller.poll(), 20L * 10L, settings.getChatBridge().getPollIntervalTicks()).getTaskId();
-        getLogger().info("群服互联入站已启动：实时推送优先，轮询兜底（间隔 "
-                + (settings.getChatBridge().getPollIntervalTicks() / 20L) + " 秒）。");
+        getLogger().info("群服互联入站已启动：server-id=" + settings.getServerId()
+                + " -> " + settings.getBaseUrl()
+                + "，实时推送优先，轮询兜底（间隔 " + (settings.getChatBridge().getPollIntervalTicks() / 20L) + " 秒）。"
+                + "server-id 必须与 Admin 侧配置了群服互联的服务器条目一致，否则只会收到心跳、永远收不到群消息。");
     }
 
     private void stopInboundPoller() {
