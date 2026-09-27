@@ -48,8 +48,8 @@ jobs:
         with:
           name: bridge
           path: |
-            velocity/build/libs/yudream-velocity-*.jar
-            fabric-26.2/build/libs/yudream_minecraft_server-fabric-*.jar
+            bridge/velocity/build/libs/yudream-velocity-*.jar
+            bridge/fabric-26.2/build/libs/yudream_minecraft_server-fabric-*.jar
           if-no-files-found: error
 
   mods:
@@ -71,8 +71,8 @@ jobs:
         with:
           name: mods
           path: |
-            forge-1.20.1/build/libs/yudream_minecraft_server-forge-*.jar
-            neoforge-1.21.1/build/libs/yudream_minecraft_server-neoforge-*.jar
+            mods/forge-1.20.1/build/libs/yudream_minecraft_server-forge-*.jar
+            mods/neoforge-1.21.1/build/libs/yudream_minecraft_server-neoforge-*.jar
           if-no-files-found: error
 
   release:
@@ -84,8 +84,15 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Collect jars (flatten artifact nesting)
+        run: |
+          mkdir -p release
+          find dist -name '*.jar' -exec cp {} release/ \;
+          ls -la release
+          [ -n "$(ls -A release)" ] || { echo '::error::no jars found under dist/'; exit 1; }
       - name: Publish GitHub release with the five jars
         uses: softprops/action-gh-release@v2
         with:
+          fail_on_unmatched_files: true
           generate_release_notes: true
-          files: dist/*.jar
+          files: release/*.jar
