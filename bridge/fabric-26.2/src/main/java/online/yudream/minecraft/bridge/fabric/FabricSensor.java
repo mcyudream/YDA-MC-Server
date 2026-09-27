@@ -19,10 +19,10 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
-import online.yudream.minecraft.bridge.common.model.PlayerIdentity;
-import online.yudream.minecraft.bridge.common.protocol.BridgeMessage;
-import online.yudream.minecraft.bridge.common.protocol.BridgeProtocol;
-import online.yudream.minecraft.bridge.common.protocol.ProtocolException;
+import online.yudream.minecraft.bridge.core.model.PlayerIdentity;
+import online.yudream.minecraft.bridge.core.protocol.BridgeMessage;
+import online.yudream.minecraft.bridge.core.protocol.BridgeProtocol;
+import online.yudream.minecraft.bridge.core.protocol.ProtocolException;
 import online.yudream.minecraft.bridge.fabric.config.FabricSettings;
 
 import java.util.ArrayList;

@@ -1,5 +1,11 @@
 package online.yudream.minecraft.mod.common;
 
+import online.yudream.minecraft.bridge.core.http.HttpResult;
+import online.yudream.minecraft.bridge.core.http.YudreamApiClient;
+import online.yudream.minecraft.bridge.core.log.LogSink;
+import online.yudream.minecraft.bridge.core.model.PlayerEventPayload;
+import online.yudream.minecraft.bridge.core.model.PlayerEventType;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -105,13 +111,13 @@ public final class ReportQueue {
                     logger.info("Sending YuDream report: " + describe(task) + ", attempt=" + attempt + "/" + attempts);
                 }
                 HttpResult result = task.snapshot
-                        ? client.snapshot(task.players, task.observedAt)
+                        ? client.snapshot(task.players, task.observedAt, null)
                         : client.report(task.type, task.payload);
                 long elapsedMs = System.currentTimeMillis() - startedAt;
                 if (result.isSuccess()) {
                     if (config.isLogSuccess()) {
                         logger.info("YuDream report success: " + describe(task)
-                                + ", http=" + result.getStatusCode()
+                                + ", http=" + result.statusCode()
                                 + ", attempt=" + attempt + "/" + attempts
                                 + ", elapsedMs=" + elapsedMs);
                     }
@@ -119,17 +125,17 @@ public final class ReportQueue {
                 }
                 if (config.isLogAttempts() && attempt < attempts) {
                     logger.warn("YuDream report attempt failed: " + describe(task)
-                            + ", http=" + result.getStatusCode()
+                            + ", http=" + result.statusCode()
                             + ", attempt=" + attempt + "/" + attempts
                             + ", elapsedMs=" + elapsedMs
-                            + ", response=" + trim(result.getBody()));
+                            + ", response=" + trim(result.body()));
                 }
                 if (attempt == attempts && config.isLogFailures()) {
                     logger.warn("YuDream report failed: " + describe(task)
-                            + ", http=" + result.getStatusCode()
+                            + ", http=" + result.statusCode()
                             + ", attempts=" + attempts
                             + ", elapsedMs=" + elapsedMs
-                            + ", response=" + trim(result.getBody()));
+                            + ", response=" + trim(result.body()));
                 }
             } catch (Exception e) {
                 long elapsedMs = System.currentTimeMillis() - startedAt;
@@ -159,10 +165,10 @@ public final class ReportQueue {
         StringBuilder message = new StringBuilder();
         message.append("type=").append(task.type);
         message.append(", endpoint=/players/").append(task.type.getRemotePath());
-        message.append(", player=").append(task.payload.getPlayerName());
+        message.append(", player=").append(task.payload.playerName());
         if (config.isLogPayload()) {
-            message.append(", playerId=").append(task.payload.getPlayerId());
-            message.append(", eventAt=").append(task.payload.getEventAt());
+            message.append(", playerId=").append(task.payload.playerId());
+            message.append(", eventAt=").append(task.payload.eventAt());
         }
         return message.toString();
     }
@@ -192,7 +198,7 @@ public final class ReportQueue {
         }
 
         private static ReportTask event(PlayerEventType type, PlayerEventPayload payload) {
-            return new ReportTask(false, type, payload, null, payload.getEventAt());
+            return new ReportTask(false, type, payload, null, payload.eventAt());
         }
 
         private static ReportTask snapshot(Collection<PlayerEventPayload> players, long observedAt) {

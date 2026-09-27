@@ -16,7 +16,7 @@ tasks.withType(JavaCompile).configureEach {
 
 // The shared bridge core is compiled straight into this jar, the same convention mods/* uses.
 // It keeps the plugin a single self-contained file with no shading step.
-sourceSets.main.java.srcDir project(':common').file('src/main/java')
+sourceSets.main.java.srcDir project(':core').file('src/main/java')
 
 dependencies {
     compileOnly "com.velocitypowered:velocity-api:${velocity_api_version}"

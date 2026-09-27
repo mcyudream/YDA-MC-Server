@@ -17,22 +17,23 @@ import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.messages.ChannelIdentifier;
 import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import com.velocitypowered.api.scheduler.ScheduledTask;
-import online.yudream.minecraft.bridge.common.afk.AfkTracker;
-import online.yudream.minecraft.bridge.common.config.BridgeSettings;
-import online.yudream.minecraft.bridge.common.config.ConfigFile;
-import online.yudream.minecraft.bridge.common.http.HttpResult;
-import online.yudream.minecraft.bridge.common.http.YudreamApiClient;
-import online.yudream.minecraft.bridge.common.json.JsonValue;
-import online.yudream.minecraft.bridge.common.log.LogSink;
-import online.yudream.minecraft.bridge.common.model.PlayerEventPayload;
-import online.yudream.minecraft.bridge.common.model.PlayerEventType;
-import online.yudream.minecraft.bridge.common.model.PlayerIdentity;
-import online.yudream.minecraft.bridge.common.protocol.BridgeMessage;
-import online.yudream.minecraft.bridge.common.protocol.BridgeProtocol;
-import online.yudream.minecraft.bridge.common.protocol.ProtocolException;
-import online.yudream.minecraft.bridge.common.queue.ReportJournal;
-import online.yudream.minecraft.bridge.common.queue.ReportQueue;
-import online.yudream.minecraft.bridge.common.summary.PlayerSummary;
+import online.yudream.minecraft.bridge.core.afk.AfkTracker;
+import online.yudream.minecraft.bridge.core.config.BridgeSettings;
+import online.yudream.minecraft.bridge.core.config.ConfigFile;
+import online.yudream.minecraft.bridge.core.http.HttpResult;
+import online.yudream.minecraft.bridge.core.http.InboundChatSse;
+import online.yudream.minecraft.bridge.core.http.YudreamApiClient;
+import online.yudream.minecraft.bridge.core.json.JsonValue;
+import online.yudream.minecraft.bridge.core.log.LogSink;
+import online.yudream.minecraft.bridge.core.model.PlayerEventPayload;
+import online.yudream.minecraft.bridge.core.model.PlayerEventType;
+import online.yudream.minecraft.bridge.core.model.PlayerIdentity;
+import online.yudream.minecraft.bridge.core.protocol.BridgeMessage;
+import online.yudream.minecraft.bridge.core.protocol.BridgeProtocol;
+import online.yudream.minecraft.bridge.core.protocol.ProtocolException;
+import online.yudream.minecraft.bridge.core.queue.ReportJournal;
+import online.yudream.minecraft.bridge.core.queue.ReportQueue;
+import online.yudream.minecraft.bridge.core.summary.PlayerSummary;
 import online.yudream.minecraft.bridge.velocity.command.YudreamCommand;
 import online.yudream.minecraft.bridge.velocity.config.ConfigTemplate;
 import online.yudream.minecraft.bridge.velocity.config.VelocitySettings;
@@ -52,6 +53,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
@@ -112,6 +114,8 @@ public final class YudreamVelocityPlugin {
     private ScheduledTask inboundChatTask;
     /** 群服互联入站游标：Admin 队列里已取到的最大序号。 */
     private volatile long inboundChatCursor;
+    /** SSE 长连接进行中标记：防止调度周期重叠时出现双流重复投递。 */
+    private final AtomicBoolean inboundStreaming = new AtomicBoolean(false);
     private boolean warnedAboutTarget;
     private boolean warnedAboutSensor;
 
@@ -350,6 +354,51 @@ public final class YudreamVelocityPlugin {
         if (!settings.chatBridgeEnabled() || !canReport()) {
             return;
         }
+        // 优先 SSE 长连接：群消息即到即推；连不上（旧宿主/网络）再退回轮询
+        if (streamInboundChat()) {
+            return;
+        }
+        pollInboundChatOnce();
+    }
+
+    /**
+     * 尝试按 SSE 长连接接收群消息，阻塞读直到服务端断开。返回 {@code true} 表示本轮
+     * 已由流覆盖（含已有其他线程持流）；{@code false} 表示流不可用，应退回轮询。
+     */
+    private boolean streamInboundChat() {
+        if (!inboundStreaming.compareAndSet(false, true)) {
+            return true;
+        }
+        final YudreamApiClient client = apiClient;
+        try {
+            InboundChatSse.read(client.inboundChatStream(inboundChatCursor), new InboundChatSse.Listener() {
+                @Override
+                public void onConnected(long latest) {
+                    // 首连快进：代理重启后不把历史窗口内还留着的群消息再投给后端
+                    if (inboundChatCursor == 0L && latest > 0) {
+                        inboundChatCursor = latest;
+                    }
+                }
+
+                @Override
+                public void onMessage(long seq, String sender, String content, long at) {
+                    if (seq <= inboundChatCursor || content.trim().isEmpty()) {
+                        return;
+                    }
+                    inboundChatCursor = seq;
+                    deliverToTarget(BridgeProtocol.encode(new BridgeMessage.GroupMessage(sender, content, at)));
+                }
+            });
+            return true;
+        } catch (IOException e) {
+            log.debug("Inbound chat stream unavailable, falling back to polling: " + e.getMessage());
+            return false;
+        } finally {
+            inboundStreaming.set(false);
+        }
+    }
+
+    private void pollInboundChatOnce() {
         final YudreamApiClient client = apiClient;
         long cursor = inboundChatCursor;
         HttpResult result;
@@ -365,7 +414,7 @@ public final class YudreamVelocityPlugin {
         JsonValue body;
         try {
             body = JsonValue.parse(result.body());
-        } catch (online.yudream.minecraft.bridge.common.json.JsonSyntaxException e) {
+        } catch (online.yudream.minecraft.bridge.core.json.JsonSyntaxException e) {
             return;
         }
         if (!body.isObject()) {

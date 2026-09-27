@@ -17,7 +17,7 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 // The shared bridge core is compiled straight into this jar, the same convention mods/* uses.
-sourceSets.main.java.srcDir project(':common').file('src/main/java')
+sourceSets.main.java.srcDir project(':core').file('src/main/java')
 
 // Minecraft 26.2 ships unobfuscated, so Loom 1.17 needs no mappings declaration here.
 dependencies {

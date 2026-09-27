@@ -1,7 +1,7 @@
 package online.yudream.minecraft.bridge.fabric;
 
 import net.fabricmc.api.DedicatedServerModInitializer;
-import online.yudream.minecraft.bridge.common.config.ConfigFile;
+import online.yudream.minecraft.bridge.core.config.ConfigFile;
 import online.yudream.minecraft.bridge.fabric.config.FabricConfigTemplate;
 import online.yudream.minecraft.bridge.fabric.config.FabricSettings;
 

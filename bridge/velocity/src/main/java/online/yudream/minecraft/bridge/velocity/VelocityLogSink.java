@@ -1,6 +1,6 @@
 package online.yudream.minecraft.bridge.velocity;
 
-import online.yudream.minecraft.bridge.common.log.LogSink;
+import online.yudream.minecraft.bridge.core.log.LogSink;
 import org.slf4j.Logger;
 
 /** Routes bridge log lines into the proxy log. */

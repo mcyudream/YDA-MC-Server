@@ -1,8 +1,8 @@
 package online.yudream.minecraft.bridge.fabric;
 
-import online.yudream.minecraft.bridge.common.config.ConfigFile;
-import online.yudream.minecraft.bridge.common.log.LogSink;
-import online.yudream.minecraft.bridge.common.protocol.BridgeMessage;
+import online.yudream.minecraft.bridge.core.config.ConfigFile;
+import online.yudream.minecraft.bridge.core.log.LogSink;
+import online.yudream.minecraft.bridge.core.protocol.BridgeMessage;
 import online.yudream.minecraft.bridge.fabric.config.FabricConfigTemplate;
 import online.yudream.minecraft.bridge.fabric.config.FabricSettings;
 

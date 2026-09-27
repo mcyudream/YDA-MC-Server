@@ -1,6 +1,6 @@
 package online.yudream.minecraft.bridge.velocity.presence;
 
-import online.yudream.minecraft.bridge.common.model.PlayerIdentity;
+import online.yudream.minecraft.bridge.core.model.PlayerIdentity;
 
 import java.util.ArrayList;
 import java.util.List;

@@ -1,6 +1,6 @@
 package online.yudream.minecraft.bridge.fabric.config;
 
-import online.yudream.minecraft.bridge.common.config.ConfigFile;
+import online.yudream.minecraft.bridge.core.config.ConfigFile;
 
 /**
  * Sensor-side configuration.

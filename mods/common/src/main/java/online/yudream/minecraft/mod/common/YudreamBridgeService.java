@@ -1,5 +1,18 @@
 package online.yudream.minecraft.mod.common;
 
+import online.yudream.minecraft.bridge.core.json.JsonSyntaxException;
+import online.yudream.minecraft.bridge.core.json.JsonValue;
+
+import online.yudream.minecraft.bridge.core.http.InboundChatSse;
+import online.yudream.minecraft.bridge.core.http.HttpResult;
+import online.yudream.minecraft.bridge.core.http.YudreamApiClient;
+import online.yudream.minecraft.bridge.core.log.LogSink;
+import online.yudream.minecraft.bridge.core.model.PlayerEventPayload;
+import online.yudream.minecraft.bridge.core.model.PlayerEventType;
+import online.yudream.minecraft.bridge.core.model.PlayerIdentity;
+import online.yudream.minecraft.bridge.core.summary.PlayerSummary;
+
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Collection;
 import java.util.Collections;
@@ -22,6 +35,9 @@ public final class YudreamBridgeService {
     /** 群服互联入站广播回调：由平台 mod 设置，负责把文本切回服务器主线程。 */
     private volatile java.util.function.Consumer<String> inboundBroadcast;
     private volatile long inboundCursor;
+    /** SSE 长连接进行中标记：防止 tick 重入时出现双流重复投递。 */
+    private final java.util.concurrent.atomic.AtomicBoolean inboundStreaming =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
     private long lastInboundPollAt;
     private long lastAfkCheckAt;
     private long lastSnapshotAt;
@@ -40,7 +56,7 @@ public final class YudreamBridgeService {
             reportQueue.shutdown(currentFlushTimeout());
         }
         config = BridgeConfigLoader.load(configPath, logger);
-        apiClient = new YudreamApiClient(config);
+        apiClient = new YudreamApiClient(config.toSettings(), "YudreamMinecraftServerMod/1.0");
         reportQueue = new ReportQueue(logger, apiClient, config);
         lastAfkCheckAt = 0L;
         lastSnapshotAt = 0L;
@@ -74,7 +90,7 @@ public final class YudreamBridgeService {
         }
         long now = System.currentTimeMillis();
         for (PlayerIdentity player : onlinePlayers) {
-            states.put(player.getUuid(), new PlayerActivityState(now, false));
+            states.put(player.uuid(), new PlayerActivityState(now, false));
             reportQueue.submit(PlayerEventType.JOIN, player.payload(now));
         }
         reportSnapshot(onlinePlayers, now);
@@ -85,7 +101,7 @@ public final class YudreamBridgeService {
             return;
         }
         long now = System.currentTimeMillis();
-        states.put(player.getUuid(), new PlayerActivityState(now, false));
+        states.put(player.uuid(), new PlayerActivityState(now, false));
         reportQueue.submit(PlayerEventType.JOIN, player.payload(now));
     }
 
@@ -94,7 +110,7 @@ public final class YudreamBridgeService {
             return;
         }
         reportQueue.submit(PlayerEventType.QUIT, player.payload(System.currentTimeMillis()));
-        states.remove(player.getUuid());
+        states.remove(player.uuid());
     }
 
     // ---------------------------------------------------------------- 群服互联（游戏 → 群）
@@ -111,7 +127,7 @@ public final class YudreamBridgeService {
             return;
         }
         reportQueue.submit(type, new PlayerEventPayload(
-                player.getUuid().toString(), player.getName(), System.currentTimeMillis(), content.trim()));
+                player.uuid().toString(), player.name(), System.currentTimeMillis(), content.trim()));
     }
 
     // ---------------------------------------------------------------- 群服互联（群 → 游戏）
@@ -140,36 +156,82 @@ public final class YudreamBridgeService {
         if (client == null || snapshot == null || broadcast == null) {
             return;
         }
+        // 优先 SSE 长连接：群消息即到即推；连不上（旧宿主/网络）再退回轮询
+        if (!inboundStreaming.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            try {
+                streamInbound(client, snapshot, broadcast);
+                return;
+            } catch (IOException streamFailure) {
+                logger.info("YuDream inbound chat stream unavailable, falling back to polling: "
+                        + streamFailure.getMessage());
+            }
+            pollInboundOnce(client, snapshot, broadcast);
+        } finally {
+            inboundStreaming.set(false);
+        }
+    }
+
+    /** 阻塞读 SSE 实时推送直到服务端断开；流不可用（非 200/非 SSE）抛 {@link IOException}。 */
+    private void streamInbound(YudreamApiClient client, BridgeConfig snapshot,
+                               java.util.function.Consumer<String> broadcast) throws IOException {
+        InboundChatSse.read(client.inboundChatStream(inboundCursor), new InboundChatSse.Listener() {
+            @Override
+            public void onConnected(long latest) {
+                // 首连快进：重启后不重播历史窗口内还留着的群消息
+                if (inboundCursor == 0L && latest > 0) {
+                    inboundCursor = latest;
+                }
+            }
+
+            @Override
+            public void onMessage(long seq, String sender, String content, long at) {
+                if (seq <= inboundCursor || content.trim().isEmpty()) {
+                    return;
+                }
+                inboundCursor = seq;
+                broadcast.accept(snapshot.formatChatInbound(sender, content));
+            }
+        });
+    }
+
+    private void pollInboundOnce(YudreamApiClient client, BridgeConfig snapshot,
+                                 java.util.function.Consumer<String> broadcast) {
         try {
             HttpResult result = client.inboundChat(inboundCursor);
             if (!result.isSuccess()) {
                 return;
             }
-            Map<String, Object> body = MiniJson.parseObject(result.getBody());
-            if (body == null) {
+            JsonValue body;
+            try {
+                body = JsonValue.parse(result.body());
+            } catch (JsonSyntaxException e) {
                 return;
             }
-            long latest = MiniJson.longValue(body, "latest", inboundCursor);
+            if (!body.isObject()) {
+                return;
+            }
+            long latest = body.getOr("latest", JsonValue.of(inboundCursor)).asLong(inboundCursor);
             // 首次拉取只快进游标：重启后不重播历史窗口内还留着的群消息
             boolean fastForward = inboundCursor == 0L && latest > 0;
             inboundCursor = Math.max(inboundCursor, latest);
-            Object rawMessages = body.get("messages");
-            if (!(rawMessages instanceof Collection) || fastForward) {
+            if (fastForward) {
                 return;
             }
-            for (Object item : (Collection<?>) rawMessages) {
-                if (!(item instanceof Map)) {
+            for (JsonValue message : body.getOr("messages", JsonValue.array()).items()) {
+                if (!message.isObject()) {
                     continue;
                 }
-                Map<?, ?> message = (Map<?, ?>) item;
-                Object content = message.get("content");
-                if (content == null || String.valueOf(content).trim().isEmpty()) {
+                String content = message.getOr("content", JsonValue.of("")).asString("");
+                if (content.trim().isEmpty()) {
                     continue;
                 }
-                long seq = message.get("seq") instanceof Number ? ((Number) message.get("seq")).longValue() : 0L;
+                long seq = message.getOr("seq", JsonValue.of(0L)).asLong(0L);
                 inboundCursor = Math.max(inboundCursor, seq);
                 String line = snapshot.formatChatInbound(
-                        String.valueOf(message.get("sender")), String.valueOf(content));
+                        message.getOr("sender", JsonValue.of("")).asString(""), content);
                 broadcast.accept(line);
             }
         } catch (Exception e) {
@@ -182,15 +244,15 @@ public final class YudreamBridgeService {
             return;
         }
         long now = System.currentTimeMillis();
-        PlayerActivityState state = states.get(player.getUuid());
+        PlayerActivityState state = states.get(player.uuid());
         if (state == null) {
-            states.put(player.getUuid(), new PlayerActivityState(now, false));
+            states.put(player.uuid(), new PlayerActivityState(now, false));
             return;
         }
         if (state.isAfk()) {
             reportQueue.submit(PlayerEventType.AFK_END, player.payload(now));
         }
-        states.put(player.getUuid(), new PlayerActivityState(now, false));
+        states.put(player.uuid(), new PlayerActivityState(now, false));
     }
 
     public void tick(Collection<PlayerIdentity> onlinePlayers) {
@@ -209,13 +271,13 @@ public final class YudreamBridgeService {
         }
         lastAfkCheckAt = now;
         for (PlayerIdentity player : onlinePlayers) {
-            PlayerActivityState state = states.get(player.getUuid());
+            PlayerActivityState state = states.get(player.uuid());
             if (state == null) {
-                states.put(player.getUuid(), new PlayerActivityState(now, false));
+                states.put(player.uuid(), new PlayerActivityState(now, false));
                 continue;
             }
             if (!state.isAfk() && now - state.getLastActiveAt() >= config.getAfkTimeoutMs()) {
-                states.put(player.getUuid(), new PlayerActivityState(state.getLastActiveAt(), true));
+                states.put(player.uuid(), new PlayerActivityState(state.getLastActiveAt(), true));
                 reportQueue.submit(PlayerEventType.AFK_START, player.payload(now));
             }
         }
@@ -240,13 +302,13 @@ public final class YudreamBridgeService {
             try {
                 HttpResult result = client.players(1, 100);
                 if (result.isSuccess()) {
-                    PlayerSummaryParser.Summary summary = PlayerSummaryParser.parse(result.getBody());
-                    callback.accept("Remote players: total=" + summary.getTotal()
-                            + ", online=" + summary.getOnline()
-                            + ", afk=" + summary.getAfk()
-                            + ", http=" + result.getStatusCode());
+                    PlayerSummary summary = PlayerSummary.parse(result.body());
+                    callback.accept("Remote players: total=" + summary.total()
+                            + ", online=" + summary.online()
+                            + ", afk=" + summary.afk()
+                            + ", http=" + result.statusCode());
                 } else {
-                    callback.accept("Remote status failed: HTTP " + result.getStatusCode() + " " + trim(result.getBody()));
+                    callback.accept("Remote status failed: HTTP " + result.statusCode() + " " + trim(result.body()));
                 }
             } catch (Exception e) {
                 callback.accept("Remote status failed: " + e.getMessage());

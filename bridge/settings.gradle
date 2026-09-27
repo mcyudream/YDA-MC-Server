@@ -49,7 +49,8 @@ dependencyResolutionManagement {
 
 rootProject.name = 'yudream-minecraft-server-bridge'
 
-include 'common'
+include 'core'
+project(':core').projectDir = file('../core')
 include 'velocity'
 include 'fabric262'
 project(':fabric262').projectDir = file('fabric-26.2')

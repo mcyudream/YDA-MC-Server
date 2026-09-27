@@ -1,5 +1,7 @@
 package online.yudream.minecraft.mod.common;
 
+import online.yudream.minecraft.bridge.core.log.LogSink;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;

@@ -4,7 +4,7 @@ import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.Identifier;
-import online.yudream.minecraft.bridge.common.protocol.BridgeProtocol;
+import online.yudream.minecraft.bridge.core.protocol.BridgeProtocol;
 
 /**
  * Carries one UTF-8 JSON bridge message over the custom {@code yudream:bridge} channel.

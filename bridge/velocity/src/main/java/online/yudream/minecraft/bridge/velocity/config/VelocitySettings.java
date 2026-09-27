@@ -1,7 +1,7 @@
 package online.yudream.minecraft.bridge.velocity.config;
 
-import online.yudream.minecraft.bridge.common.config.BridgeSettings;
-import online.yudream.minecraft.bridge.common.config.ConfigFile;
+import online.yudream.minecraft.bridge.core.config.BridgeSettings;
+import online.yudream.minecraft.bridge.core.config.ConfigFile;
 
 import java.util.ArrayList;
 import java.util.Collections;

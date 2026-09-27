@@ -1,0 +1,89 @@
+name: build-release
+
+# 三条构建线（Bukkit/Maven、bridge=Velocity+Fabric、mods=Forge+NeoForge）打 tag 自动构建，
+# 全部成功后把五个 jar 发成 GitHub Release。version.properties 是唯一版本号来源。
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bukkit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build Bukkit plugin (shared core compiled at Java 8)
+        run: mvn -B -ntp package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bukkit
+          path: target/yudream-minecraft-server-bukkit-*.jar
+          if-no-files-found: error
+
+  bridge:
+    # Velocity 编译目标 Java 21；Fabric 26.2 的 loom 1.17 需要 release 25，因此整个 job 用 JDK 25。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.1'
+      - name: Build Velocity plugin and Fabric sensor (includes :core tests)
+        run: gradle build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridge
+          path: |
+            velocity/build/libs/yudream-velocity-*.jar
+            fabric-26.2/build/libs/yudream_minecraft_server-fabric-*.jar
+          if-no-files-found: error
+
+  mods:
+    # Forge 1.20.1 / NeoForge 1.21.1 工具链为 Java 17，job 直接跑在 17 上免工具链解析。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Build Forge and NeoForge mods (includes shared core sources)
+        run: gradle build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mods
+          path: |
+            forge-1.20.1/build/libs/yudream_minecraft_server-forge-*.jar
+            neoforge-1.21.1/build/libs/yudream_minecraft_server-neoforge-*.jar
+          if-no-files-found: error
+
+  release:
+    needs: [bukkit, bridge, mods]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish GitHub release with the five jars
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*.jar

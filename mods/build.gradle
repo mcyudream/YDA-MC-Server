@@ -13,9 +13,16 @@ def resolveRepoUrl = { String propertyName, String envName, String fallback ->
     return uri((value == null || value.trim().isEmpty()) ? fallback : value)
 }
 
+// 与 bridge/、bukkit（Maven）共用的版本号：仓库根 version.properties
+def sharedVersion = { ->
+    def props = new Properties()
+    file('../version.properties').withInputStream { props.load(it) }
+    props.getProperty('version')
+}
+
 allprojects {
     group = 'online.yudream.minecraft'
-    version = project.findProperty('mod_version') ?: '1.0.0'
+    version = sharedVersion()
 
     repositories {
         mavenLocal()

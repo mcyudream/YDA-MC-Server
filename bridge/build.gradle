@@ -1,6 +1,13 @@
+// 三条构建（bridge、mods、bukkit/Maven）共用的版本号：仓库根 version.properties
+def sharedVersion = { ->
+    def props = new Properties()
+    file('../version.properties').withInputStream { props.load(it) }
+    props.getProperty('version')
+}
+
 allprojects {
     group = project_group
-    version = project_version
+    version = sharedVersion()
 }
 
 subprojects {

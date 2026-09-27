@@ -1,5 +1,7 @@
 package online.yudream.minecraft.mod.common;
 
+import online.yudream.minecraft.bridge.core.config.BridgeSettings;
+
 public final class BridgeConfig {
 
     private final boolean enabled;
@@ -230,5 +232,31 @@ public final class BridgeConfig {
 
     private static long positive(long value, long fallback) {
         return value > 0 ? value : fallback;
+    }
+
+    /** 映射到共享 core 的设置：HTTP 客户端与队列只消费这一份。 */
+    public BridgeSettings toSettings() {
+        return BridgeSettings.builder()
+                .enabled(isEnabled())
+                .baseUrl(getBaseUrl())
+                .serverId(getServerId())
+                .apiKey(getApiKey())
+                .connectTimeoutMs(getConnectTimeoutMs())
+                .readTimeoutMs(getReadTimeoutMs())
+                .retryAttempts(getRetryAttempts())
+                .retryDelayMs(getRetryDelayMs())
+                .queueCapacity(getQueueCapacity())
+                .logQueued(isLogQueued())
+                .logAttempts(isLogAttempts())
+                .logSuccess(isLogSuccess())
+                .logFailures(isLogFailures())
+                .logPayload(isLogPayload())
+                .afkEnabled(isAfkEnabled())
+                .afkTimeoutMs(getAfkTimeoutMs())
+                .afkCheckIntervalMs(getAfkCheckIntervalMs())
+                .syncOnlineOnEnable(isSyncOnlineOnStart())
+                .reportQuitOnDisable(isReportQuitOnStop())
+                .flushTimeoutMs(getFlushTimeoutMs())
+                .build();
     }
 }

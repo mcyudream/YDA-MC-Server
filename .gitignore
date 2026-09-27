@@ -10,3 +10,4 @@ bridge/**/build/
 bridge/**/run/
 bridge/.gradle/
 .gradle/
+core/build/

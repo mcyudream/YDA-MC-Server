@@ -45,6 +45,24 @@ public final class YudreamApiClient {
         return request("GET", serverUrl(path), null);
     }
 
+    /**
+     * 群服互联 SSE：打开实时推送长连接，调用方用 {@code InboundChatSse.read} 阻塞读。
+     * 读取超时放宽到 90s，靠服务端 25s 心跳保活；连不上或响应不是 SSE 时抛
+     * {@link IOException}，调用方降级回 {@link #inboundChat(long)} 轮询。
+     */
+    public HttpURLConnection inboundChatStream(long after) throws IOException {
+        String path = "/chat/inbound/stream?after=" + Math.max(after, 0);
+        HttpURLConnection connection = (HttpURLConnection) URI.create(serverUrl(path)).toURL().openConnection();
+        connection.setRequestMethod("GET");
+        connection.setConnectTimeout(config.getConnectTimeoutMs());
+        connection.setReadTimeout(Math.max(config.getReadTimeoutMs(), 90_000));
+        connection.setRequestProperty("Accept", "text/event-stream");
+        connection.setRequestProperty("Cache-Control", "no-cache");
+        connection.setRequestProperty("User-Agent", "YudreamMinecraftServerBukkit/1.0");
+        connection.setRequestProperty("X-API-Key", config.getApiKey());
+        return connection;
+    }
+
     String serverUrl(String serverRelativePath) {
         return config.getBaseUrl()
                 + PLUGIN_PATH
