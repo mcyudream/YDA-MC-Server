@@ -166,24 +166,46 @@ public final class JsonValue {
     }
 
     public long asLong(long fallback) {
-        if (kind != Kind.NUMBER) {
-            return fallback;
+        if (kind == Kind.NUMBER) {
+            return ((Number) raw).longValue();
         }
-        return ((Number) raw).longValue();
+        // 宿主平台把 Long 序列化为字符串（ID/时间戳/序号约定），数字字符串须兼容。
+        if (kind == Kind.STRING) {
+            try {
+                return Long.parseLong(((String) raw).trim());
+            } catch (NumberFormatException e) {
+                return fallback;
+            }
+        }
+        return fallback;
     }
 
     public int asInt(int fallback) {
-        if (kind != Kind.NUMBER) {
-            return fallback;
+        if (kind == Kind.NUMBER) {
+            return ((Number) raw).intValue();
         }
-        return ((Number) raw).intValue();
+        if (kind == Kind.STRING) {
+            try {
+                return Integer.parseInt(((String) raw).trim());
+            } catch (NumberFormatException e) {
+                return fallback;
+            }
+        }
+        return fallback;
     }
 
     public double asDouble(double fallback) {
-        if (kind != Kind.NUMBER) {
-            return fallback;
+        if (kind == Kind.NUMBER) {
+            return ((Number) raw).doubleValue();
         }
-        return ((Number) raw).doubleValue();
+        if (kind == Kind.STRING) {
+            try {
+                return Double.parseDouble(((String) raw).trim());
+            } catch (NumberFormatException e) {
+                return fallback;
+            }
+        }
+        return fallback;
     }
 
     private void require(Kind expected, String operation) {
