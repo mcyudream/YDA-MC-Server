@@ -103,6 +103,12 @@ public final class InboundChatPoller {
             @Override
             public void onConnected(long latest) {
                 logConnected(latest);
+                // 序号回绕检测：宿主插件重启/热更新会重置消息序号计数器，
+                // 若不回拨游标，新消息（seq≤旧游标）将被永久吞掉。
+                if (latest > 0 && latest < cursor) {
+                    debugLog("服务端序号回绕：latest=" + latest + " < cursor=" + cursor + "，游标重置为 " + latest);
+                    cursor = latest;
+                }
                 // 首连快进：重启后不重播历史窗口内还留着的群消息
                 if (cursor == 0L && latest > 0) {
                     debugLog("SSE 首连快进：cursor 0 -> " + latest + "（不重播历史消息）");
