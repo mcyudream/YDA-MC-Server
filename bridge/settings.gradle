@@ -17,8 +17,16 @@ pluginManagement {
     }
 
     repositories {
-        maven { url = resolveRepoUrl.call('gradlePluginMirrorUrl', 'GRADLE_PLUGIN_MIRROR_URL', 'https://maven.aliyun.com/repository/gradle-plugin') }
-        maven { url = resolveRepoUrl.call('mavenPublicMirrorUrl', 'MAVEN_PUBLIC_MIRROR_URL', 'https://maven.aliyun.com/repository/public') }
+        // 阿里云镜像对 fabricmc 系构件偶发 5xx，且 Gradle 遇 5xx 不落回下一仓库：
+        // fabricmc 组一律排除，直走官方源。
+        maven {
+            url = resolveRepoUrl.call('gradlePluginMirrorUrl', 'GRADLE_PLUGIN_MIRROR_URL', 'https://maven.aliyun.com/repository/gradle-plugin')
+            content { excludeGroupByRegex "net\.fabricmc.*" }
+        }
+        maven {
+            url = resolveRepoUrl.call('mavenPublicMirrorUrl', 'MAVEN_PUBLIC_MIRROR_URL', 'https://maven.aliyun.com/repository/public')
+            content { excludeGroupByRegex "net\.fabricmc.*" }
+        }
         maven { url = resolveRepoUrl.call('fabricMavenUrl', 'FABRIC_MAVEN_URL', 'https://maven.fabricmc.net/') }
         gradlePluginPortal()
     }
@@ -39,8 +47,15 @@ dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
     repositories {
         mavenLocal()
-        maven { url = resolveRepoUrl.call('mavenPublicMirrorUrl', 'MAVEN_PUBLIC_MIRROR_URL', 'https://maven.aliyun.com/repository/public') }
-        maven { url = resolveRepoUrl.call('mavenCentralMirrorUrl', 'MAVEN_CENTRAL_MIRROR_URL', 'https://maven.aliyun.com/repository/central') }
+        // 同上：fabricmc 组排除阿里云，防 5xx 中止解析。
+        maven {
+            url = resolveRepoUrl.call('mavenPublicMirrorUrl', 'MAVEN_PUBLIC_MIRROR_URL', 'https://maven.aliyun.com/repository/public')
+            content { excludeGroupByRegex "net\.fabricmc.*" }
+        }
+        maven {
+            url = resolveRepoUrl.call('mavenCentralMirrorUrl', 'MAVEN_CENTRAL_MIRROR_URL', 'https://maven.aliyun.com/repository/central')
+            content { excludeGroupByRegex "net\.fabricmc.*" }
+        }
         maven { url = resolveRepoUrl.call('papermcRepoUrl', 'PAPERMC_REPO_URL', 'https://repo.papermc.io/repository/maven-public/') }
         maven { url = resolveRepoUrl.call('fabricMavenUrl', 'FABRIC_MAVEN_URL', 'https://maven.fabricmc.net/') }
         mavenCentral()
