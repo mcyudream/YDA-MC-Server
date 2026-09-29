@@ -40,6 +40,13 @@ public final class InboundChatPoller {
         this.plugin = plugin;
     }
 
+    /** 调试日志：chat-bridge.debug: true 时输出入站链路全量细节。 */
+    private void debugLog(String message) {
+        if (plugin.getSettings().getChatBridge().isDebug()) {
+            plugin.getLogger().info("[群服互联调试] " + message);
+        }
+    }
+
     /** 由异步循环任务调用；所有失败都折叠成日志，绝不抛出。 */
     public void poll() {
         try {
@@ -56,6 +63,7 @@ public final class InboundChatPoller {
     }
 
     private void pollUnsafe() {
+        debugLog("入站 tick：canReport=" + plugin.canReport() + " cursor=" + cursor + " streaming=" + streaming.get());
         if (!plugin.canReport()) {
             // 下游模式由代理统一拉取并通过插件消息通道下发；本机无凭据时不轮询。
             if (!loggedGateSkip) {
@@ -67,6 +75,7 @@ public final class InboundChatPoller {
         loggedGateSkip = false;
         // 优先 SSE 长连接：群消息即到即推；连不上（旧宿主/网络）再退回轮询
         if (!streaming.compareAndSet(false, true)) {
+            debugLog("入站 tick：已有 SSE 流在读，本 tick 跳过");
             return;
         }
         try {
@@ -84,19 +93,29 @@ public final class InboundChatPoller {
 
     /** 阻塞读 SSE 实时推送直到服务端断开；流不可用（非 200/非 SSE）抛 {@link IOException}。 */
     private void streamOnce() throws IOException {
+        debugLog("SSE 连接中：after=" + cursor + "（完整 URL 见 debug 首行）");
         InboundChatSse.read(plugin.getApiClient().inboundChatStream(cursor), new InboundChatSse.Listener() {
+            @Override
+            public void onEvent(String event, String data) {
+                debugLog("SSE 收到事件 event=" + event + " data=" + abbreviate(data));
+            }
+
             @Override
             public void onConnected(long latest) {
                 logConnected(latest);
                 // 首连快进：重启后不重播历史窗口内还留着的群消息
                 if (cursor == 0L && latest > 0) {
+                    debugLog("SSE 首连快进：cursor 0 -> " + latest + "（不重播历史消息）");
                     cursor = latest;
                 }
             }
 
             @Override
             public void onMessage(long seq, String sender, String content, long at) {
+                debugLog("SSE 收到消息帧 seq=" + seq + " sender=" + sender + " content=" + abbreviate(content)
+                        + "（cursor=" + cursor + "）");
                 if (seq <= cursor || content.trim().isEmpty()) {
+                    debugLog("跳过消息 seq=" + seq + "（≤ cursor=" + cursor + " 或内容为空）");
                     return;
                 }
                 cursor = seq;
@@ -104,6 +123,8 @@ public final class InboundChatPoller {
                 broadcast(sender, content);
             }
         });
+        // read() 正常返回 = 服务端干净关闭（EOF）
+        debugLog("SSE 流被服务端关闭（EOF）");
     }
 
     private void pollOnce() {
@@ -125,6 +146,7 @@ public final class InboundChatPoller {
         long latest = MiniJson.longValue(body, "latest", cursor);
         // 首次拉取只快进游标：重启后不重播历史窗口内还留着的群消息
         boolean fastForward = cursor == 0L && latest > 0;
+        debugLog("轮询响应：latest=" + latest + " fastForward=" + fastForward + "（cursor=" + cursor + "）");
         cursor = Math.max(cursor, latest);
         Object rawMessages = body.get("messages");
         if (!(rawMessages instanceof List) || fastForward) {

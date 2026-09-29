@@ -88,6 +88,8 @@ chat-bridge:
   poll-inbound: true
   # 群消息拉取间隔（秒），最小 2。
   poll-interval-seconds: 3
+  # 入站链路调试日志：开启后逐条打印 SSE 连接、每个事件帧、游标决策与广播。
+  debug: false
   # 广播格式；{sender} 是发送者 QQ 标识，{content} 是消息内容。
   inbound-format: "§8[§a群§8] §f{sender} §7» §f{content}"
 

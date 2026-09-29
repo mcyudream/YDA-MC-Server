@@ -15,14 +15,16 @@ public final class ChatBridgeOptions {
     private final boolean pollInbound;
     private final long pollIntervalTicks;
     private final String inboundFormat;
+    private final boolean debug;
 
     private ChatBridgeOptions(boolean enabled, boolean reportEvents, boolean pollInbound,
-                              long pollIntervalTicks, String inboundFormat) {
+                              long pollIntervalTicks, String inboundFormat, boolean debug) {
         this.enabled = enabled;
         this.reportEvents = reportEvents;
         this.pollInbound = pollInbound;
         this.pollIntervalTicks = pollIntervalTicks;
         this.inboundFormat = inboundFormat;
+        this.debug = debug;
     }
 
     public static ChatBridgeOptions load(FileConfiguration config) {
@@ -32,13 +34,14 @@ public final class ChatBridgeOptions {
                 config.getBoolean("chat-bridge.report-events", true),
                 config.getBoolean("chat-bridge.poll-inbound", true),
                 Math.max(intervalSeconds, 2) * 20L,
-                normalizeFormat(config.getString("chat-bridge.inbound-format", null))
+                normalizeFormat(config.getString("chat-bridge.inbound-format", null)),
+                config.getBoolean("chat-bridge.debug", false)
         );
     }
 
     public static ChatBridgeOptions defaults() {
         return new ChatBridgeOptions(true, true, true, 60L,
-                "§8[§a群§8] §f{sender} §7» §f{content}");
+                "§8[§a群§8] §f{sender} §7» §f{content}", false);
     }
 
     private static String normalizeFormat(String value) {
@@ -67,6 +70,11 @@ public final class ChatBridgeOptions {
 
     public long getPollIntervalTicks() {
         return pollIntervalTicks;
+    }
+
+    /** 入站链路调试日志（连接/每帧/游标决策/广播）。 */
+    public boolean isDebug() {
+        return debug;
     }
 
     public String formatInbound(String sender, String content) {

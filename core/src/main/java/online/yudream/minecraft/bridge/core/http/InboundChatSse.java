@@ -23,6 +23,10 @@ public final class InboundChatSse {
         default void onConnected(long latest) {
         }
 
+        /** 每个解析完成的 SSE 事件（connected/heartbeat/message）都会回调，供调试日志使用。 */
+        default void onEvent(String event, String data) {
+        }
+
         /** 一条要广播进游戏的群消息。 */
         void onMessage(long seq, String sender, String content, long at);
     }
@@ -76,6 +80,7 @@ public final class InboundChatSse {
     }
 
     private static void dispatch(String event, String data, Listener listener) {
+        listener.onEvent(event, data);
         if ("connected".equals(event)) {
             JsonValue value = parse(data);
             if (value != null && value.isObject()) {
