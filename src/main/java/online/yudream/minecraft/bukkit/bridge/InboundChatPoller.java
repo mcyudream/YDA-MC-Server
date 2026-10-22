@@ -3,12 +3,15 @@ package online.yudream.minecraft.bukkit.bridge;
 import online.yudream.minecraft.bukkit.YudreamMinecraftPlugin;
 import online.yudream.minecraft.bukkit.api.HttpResult;
 import online.yudream.minecraft.bridge.core.http.InboundChatSse;
-import org.bukkit.Bukkit;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -30,6 +33,7 @@ public final class InboundChatPoller {
 
     private final YudreamMinecraftPlugin plugin;
     private final AtomicBoolean streaming = new AtomicBoolean(false);
+    private volatile ScheduledExecutorService executor;
     private long cursor;
     private long lastFailureLogAt;
     private long lastConnectedLogAt;
@@ -38,6 +42,40 @@ public final class InboundChatPoller {
 
     public InboundChatPoller(YudreamMinecraftPlugin plugin) {
         this.plugin = plugin;
+    }
+
+    /**
+     * Starts the inbound loop on a dedicated daemon thread.
+     *
+     * <p>The SSE read blocks until the stream ends, so it must not occupy a thread from the server's
+     * shared async pool: on Folia that pool is shared by every plugin and a long-lived read would
+     * starve them. The loop only talks HTTP and schedules broadcasts; it never touches the world.
+     */
+    public void start(long initialDelayMs, long periodMs) {
+        stop();
+        executor = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
+            @Override
+            public Thread newThread(Runnable runnable) {
+                Thread thread = new Thread(runnable, "YuDream-Minecraft-Inbound");
+                thread.setDaemon(true);
+                return thread;
+            }
+        });
+        executor.scheduleWithFixedDelay(new Runnable() {
+            @Override
+            public void run() {
+                poll();
+            }
+        }, Math.max(initialDelayMs, 0L), Math.max(periodMs, 1000L), TimeUnit.MILLISECONDS);
+    }
+
+    /** Stops the inbound loop. Safe to call more than once. */
+    public void stop() {
+        ScheduledExecutorService current = executor;
+        executor = null;
+        if (current != null) {
+            current.shutdownNow();
+        }
     }
 
     /** 调试日志：chat-bridge.debug: true 时输出入站链路全量细节。 */
@@ -177,27 +215,17 @@ public final class InboundChatPoller {
         if (broadcasts.isEmpty()) {
             return;
         }
-        Runnable deliver = new Runnable() {
-            @Override
-            public void run() {
-                for (Broadcast broadcast : broadcasts) {
-                    String line = plugin.getSettings().getChatBridge().formatInbound(broadcast.sender, broadcast.content);
-                    Bukkit.broadcastMessage(line);
-                }
-            }
-        };
-        plugin.getServer().getScheduler().runTask(plugin, deliver);
+        // 该回调在异步线程，广播必须切回服务器线程（Folia 下为 global region 线程）
+        for (final Broadcast broadcast : broadcasts) {
+            plugin.getSchedulerCompat().broadcast(
+                    plugin.getSettings().getChatBridge().formatInbound(broadcast.sender, broadcast.content));
+        }
     }
 
-    /** 单条实时消息切回主线程广播。 */
+    /** 单条实时消息切回服务器线程广播。 */
     private void broadcast(final String sender, final String content) {
-        plugin.getServer().getScheduler().runTask(plugin, new Runnable() {
-            @Override
-            public void run() {
-                String line = plugin.getSettings().getChatBridge().formatInbound(sender, content);
-                Bukkit.broadcastMessage(line);
-            }
-        });
+        plugin.getSchedulerCompat().broadcast(
+                plugin.getSettings().getChatBridge().formatInbound(sender, content));
     }
 
     private void logConnected(long latest) {

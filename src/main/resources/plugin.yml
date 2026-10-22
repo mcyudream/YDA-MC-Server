@@ -2,6 +2,8 @@ name: YudreamMinecraftServer
 main: online.yudream.minecraft.bukkit.YudreamMinecraftPlugin
 version: ${project.version}
 api-version: 1.13
+# Folia refuses to load plugins that do not declare this.
+folia-supported: true
 author: YuDream
 description: Reports player join, quit and AFK activity to YuDream Admin, standalone or as a proxy backend sensor.
 

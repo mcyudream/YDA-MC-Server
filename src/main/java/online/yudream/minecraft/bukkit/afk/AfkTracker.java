@@ -1,12 +1,12 @@
 package online.yudream.minecraft.bukkit.afk;
 
+import online.yudream.minecraft.bukkit.compat.SchedulerCompat;
 import online.yudream.minecraft.bukkit.config.YudreamConfig;
 import online.yudream.minecraft.bukkit.report.PlayerEventType;
 import online.yudream.minecraft.bukkit.report.ReportQueue;
 import online.yudream.minecraft.bukkit.util.PlayerSnapshots;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.util.Map;
 import java.util.UUID;
@@ -15,13 +15,15 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class AfkTracker {
 
     private final JavaPlugin plugin;
+    private final SchedulerCompat scheduler;
     private final ReportQueue reportQueue;
     private final YudreamConfig config;
     private final Map<UUID, State> states = new ConcurrentHashMap<UUID, State>();
-    private BukkitTask task;
+    private SchedulerCompat.TaskHandle task = SchedulerCompat.TaskHandle.NONE;
 
-    public AfkTracker(JavaPlugin plugin, ReportQueue reportQueue, YudreamConfig config) {
+    public AfkTracker(JavaPlugin plugin, SchedulerCompat scheduler, ReportQueue reportQueue, YudreamConfig config) {
         this.plugin = plugin;
+        this.scheduler = scheduler;
         this.reportQueue = reportQueue;
         this.config = config;
     }
@@ -30,7 +32,8 @@ public final class AfkTracker {
         if (!config.isAfkEnabled()) {
             return;
         }
-        task = plugin.getServer().getScheduler().runTaskTimer(plugin, new Runnable() {
+        // The global region thread is the only place that may read the whole player list on Folia.
+        task = scheduler.runGlobalTimer(new Runnable() {
             @Override
             public void run() {
                 checkAfk();
@@ -39,10 +42,8 @@ public final class AfkTracker {
     }
 
     public void stop() {
-        if (task != null) {
-            task.cancel();
-            task = null;
-        }
+        task.cancel();
+        task = SchedulerCompat.TaskHandle.NONE;
         states.clear();
     }
 
