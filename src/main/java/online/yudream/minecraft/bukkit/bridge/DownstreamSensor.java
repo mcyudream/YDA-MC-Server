@@ -1,6 +1,7 @@
 package online.yudream.minecraft.bukkit.bridge;
 
 import online.yudream.minecraft.bukkit.YudreamMinecraftPlugin;
+import online.yudream.minecraft.bukkit.compat.SchedulerCompat;
 import online.yudream.minecraft.bukkit.config.DownstreamOptions;
 import online.yudream.minecraft.bukkit.report.PlayerEventPayload;
 import online.yudream.minecraft.bukkit.report.PlayerEventType;
@@ -11,10 +12,10 @@ import org.bukkit.plugin.messaging.PluginMessageListener;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -34,7 +35,8 @@ public final class DownstreamSensor implements PluginMessageListener {
     private final YudreamMinecraftPlugin plugin;
     private final DownstreamOptions options;
 
-    private final Map<UUID, Long> lastActivityAt = new HashMap<UUID, Long>();
+    // Region threads of different players may touch this map concurrently on Folia.
+    private final Map<UUID, Long> lastActivityAt = new ConcurrentHashMap<UUID, Long>();
 
     private volatile long lastAckAt;
     private volatile int proxyProtocolVersion = -1;
@@ -42,7 +44,7 @@ public final class DownstreamSensor implements PluginMessageListener {
     private volatile String proxyTarget = "";
     private volatile boolean proxyAccepting;
 
-    private int heartbeatTaskId = -1;
+    private SchedulerCompat.TaskHandle heartbeatTask = SchedulerCompat.TaskHandle.NONE;
     private boolean channelsRegistered;
 
     public DownstreamSensor(YudreamMinecraftPlugin plugin, DownstreamOptions options) {
@@ -60,14 +62,13 @@ public final class DownstreamSensor implements PluginMessageListener {
             channelsRegistered = true;
         }
         long periodTicks = Math.max(options.getHeartbeatSeconds(), 1L) * 20L;
-        if (heartbeatTaskId < 0) {
-            heartbeatTaskId = plugin.getServer().getScheduler().scheduleSyncRepeatingTask(
-                    plugin, new Runnable() {
-                        @Override
-                        public void run() {
-                            sendHello(null);
-                        }
-                    }, periodTicks, periodTicks);
+        if (heartbeatTask.isCancelled()) {
+            heartbeatTask = plugin.getSchedulerCompat().runGlobalTimer(new Runnable() {
+                @Override
+                public void run() {
+                    sendHello(null);
+                }
+            }, periodTicks, periodTicks);
         }
         plugin.getLogger().info("Downstream mode active. Player activity is forwarded to the proxy on "
                 + BridgeProtocol.CHANNEL + "; this server does not contact YuDream Admin directly"
@@ -75,10 +76,8 @@ public final class DownstreamSensor implements PluginMessageListener {
     }
 
     public void stop() {
-        if (heartbeatTaskId >= 0) {
-            plugin.getServer().getScheduler().cancelTask(heartbeatTaskId);
-            heartbeatTaskId = -1;
-        }
+        heartbeatTask.cancel();
+        heartbeatTask = SchedulerCompat.TaskHandle.NONE;
         if (channelsRegistered) {
             Messenger messenger = plugin.getServer().getMessenger();
             messenger.unregisterOutgoingPluginChannel(plugin, BridgeProtocol.CHANNEL);
@@ -172,14 +171,25 @@ public final class DownstreamSensor implements PluginMessageListener {
         send(player, BridgeProtocol.encodeEvent(kind, source, PlayerSnapshots.from(player), System.currentTimeMillis()));
     }
 
-    private void send(Player player, byte[] data) {
-        try {
-            player.sendPluginMessage(plugin, BridgeProtocol.CHANNEL, data);
-        } catch (Throwable t) {
-            // A player can disconnect between the event and this call. Losing one activity signal or
-            // an advisory quit is not worth failing the caller over.
-            plugin.getLogger().log(Level.FINE, "Could not forward a YuDream bridge message", t);
+    private void send(final Player player, final byte[] data) {
+        if (player == null) {
+            return;
         }
+        // Plugin messages touch the player's connection, so on Folia they must run on the owning
+        // region thread. runFor() executes inline when the caller already owns the player (join,
+        // quit, movement) and hops threads otherwise (heartbeat, async chat event).
+        plugin.getSchedulerCompat().runFor(player, new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    player.sendPluginMessage(plugin, BridgeProtocol.CHANNEL, data);
+                } catch (Throwable t) {
+                    // A player can disconnect between the event and this call. Losing one activity
+                    // signal or an advisory quit is not worth failing the caller over.
+                    plugin.getLogger().log(Level.FINE, "Could not forward a YuDream bridge message", t);
+                }
+            }
+        });
     }
 
     private Player firstOnlinePlayer() {
@@ -201,9 +211,9 @@ public final class DownstreamSensor implements PluginMessageListener {
         if (incoming == null) {
             return;
         }
-        // Reply from the next tick: this callback already runs on the server thread, and the reply
-        // touches the player list and the network, so it stays on the main thread either way.
-        plugin.getServer().getScheduler().runTask(plugin, new Runnable() {
+        // Reply from the player's own region thread: this callback may run on the network thread and
+        // the reply touches the player list and the connection.
+        plugin.getSchedulerCompat().runFor(player, new Runnable() {
             @Override
             public void run() {
                 if (!player.isOnline()) {
@@ -227,7 +237,7 @@ public final class DownstreamSensor implements PluginMessageListener {
             return;
         }
         String line = plugin.getSettings().getChatBridge().formatInbound(incoming.getSender(), content);
-        plugin.getServer().broadcastMessage(line);
+        plugin.getSchedulerCompat().broadcast(line);
     }
 
     private void onHelloAck(BridgeProtocol.Incoming incoming) {

@@ -50,7 +50,7 @@ public final class AdvancementCompatibility {
                 if (player == null || title == null || title.isEmpty()) {
                     return;
                 }
-                plugin.getServer().getScheduler().runTask(plugin, new Runnable() {
+                plugin.getSchedulerCompat().runFor(player, new Runnable() {
                     @Override
                     public void run() {
                         if (player.isOnline()) {

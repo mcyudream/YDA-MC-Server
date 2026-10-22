@@ -13,6 +13,10 @@ public final class ServerCompatibility {
     }
 
     public static String describe() {
+        if (SchedulerCompat.isFolia()) {
+            return "Detected " + Bukkit.getVersion()
+                    + ". Folia regionised threading is active; global region, entity and async schedulers are used.";
+        }
         Version version = detectVersion();
         if (version == null) {
             return "Detected " + Bukkit.getVersion() + ". Using generic Bukkit compatibility mode.";

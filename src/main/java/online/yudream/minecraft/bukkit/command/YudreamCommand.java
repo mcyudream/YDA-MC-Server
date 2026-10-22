@@ -129,7 +129,7 @@ public final class YudreamCommand implements CommandExecutor, TabCompleter {
             return;
         }
         sender.sendMessage(prefix() + "Checking remote players...");
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, new Runnable() {
+        plugin.getSchedulerCompat().runAsync(new Runnable() {
             @Override
             public void run() {
                 String computedMessage;
@@ -149,7 +149,7 @@ public final class YudreamCommand implements CommandExecutor, TabCompleter {
                     computedMessage = prefix() + ChatColor.RED + "Remote status failed: " + e.getMessage();
                 }
                 final String message = computedMessage;
-                plugin.getServer().getScheduler().runTask(plugin, new Runnable() {
+                plugin.getSchedulerCompat().runGlobal(new Runnable() {
                     @Override
                     public void run() {
                         sender.sendMessage(message);

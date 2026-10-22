@@ -49,13 +49,17 @@ public final class PlayerActivityListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onChat(final AsyncPlayerChatEvent event) {
-        if (!plugin.getSettings().isResetOnChat()) {
+        if (!plugin.getSettings().isResetOnChat() || plugin.isModernChatActive()) {
+            // Paper/Folia fire the modern AsyncChatEvent as well; forwarding both would double-count.
             return;
         }
-        plugin.getServer().getScheduler().runTask(plugin, new Runnable() {
+        final Player player = event.getPlayer();
+        plugin.getSchedulerCompat().runFor(player, new Runnable() {
             @Override
             public void run() {
-                plugin.handleActivity(event.getPlayer(), BridgeProtocol.SOURCE_CHAT);
+                if (player.isOnline()) {
+                    plugin.handleActivity(player, BridgeProtocol.SOURCE_CHAT);
+                }
             }
         });
     }

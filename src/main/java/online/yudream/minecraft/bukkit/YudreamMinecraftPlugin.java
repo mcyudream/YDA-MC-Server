@@ -8,6 +8,7 @@ import online.yudream.minecraft.bukkit.bridge.InboundChatPoller;
 import online.yudream.minecraft.bukkit.command.YudreamCommand;
 import online.yudream.minecraft.bukkit.compat.AdvancementCompatibility;
 import online.yudream.minecraft.bukkit.compat.PaperChatCompatibility;
+import online.yudream.minecraft.bukkit.compat.SchedulerCompat;
 import online.yudream.minecraft.bukkit.compat.ServerCompatibility;
 import online.yudream.minecraft.bukkit.config.YudreamConfig;
 import online.yudream.minecraft.bukkit.event.GameEventListener;
@@ -45,19 +46,24 @@ import java.util.logging.Level;
  */
 public final class YudreamMinecraftPlugin extends JavaPlugin {
 
-    private YudreamConfig settings;
-    private YudreamApiClient apiClient;
-    private ReportQueue reportQueue;
-    private AfkTracker afkTracker;
-    private DownstreamSensor sensor;
-    private InboundChatPoller inboundPoller;
-    private int snapshotTaskId = -1;
-    private int inboundPollTaskId = -1;
+    private final SchedulerCompat scheduler = new SchedulerCompat(this);
+    // The report queue and the inbound poller read these from background threads, so every field a
+    // cross-thread caller touches is volatile. reloadBridge() replaces them as one unit.
+    private volatile YudreamConfig settings;
+    private volatile YudreamApiClient apiClient;
+    private volatile ReportQueue reportQueue;
+    private volatile AfkTracker afkTracker;
+    private volatile DownstreamSensor sensor;
+    private volatile InboundChatPoller inboundPoller;
+    private SchedulerCompat.TaskHandle snapshotTask = SchedulerCompat.TaskHandle.NONE;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
         getLogger().info(ServerCompatibility.describe());
+        if (scheduler.isFolia()) {
+            getLogger().info("Folia scheduling is active: global/region/async schedulers are used instead of the Bukkit scheduler.");
+        }
         reloadBridge();
 
         getServer().getPluginManager().registerEvents(new PlayerActivityListener(this), this);
@@ -78,21 +84,18 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
         if (settings.isSyncOnlineOnEnable()) {
             syncOnlinePlayers();
         }
-        snapshotTaskId = getServer().getScheduler().scheduleSyncRepeatingTask(
-                this, new Runnable() {
-                    @Override
-                    public void run() {
-                        reportPlayerSnapshot();
-                    }
-                }, 20L, 20L * 60L);
+        snapshotTask = scheduler.runGlobalTimer(new Runnable() {
+            @Override
+            public void run() {
+                reportPlayerSnapshot();
+            }
+        }, 20L, 20L * 60L);
     }
 
     @Override
     public void onDisable() {
-        if (snapshotTaskId >= 0) {
-            getServer().getScheduler().cancelTask(snapshotTaskId);
-            snapshotTaskId = -1;
-        }
+        snapshotTask.cancel();
+        snapshotTask = SchedulerCompat.TaskHandle.NONE;
         stopInboundPoller();
         if (sensor != null) {
             sensor.stop();
@@ -134,7 +137,7 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
         if (afkTracker != null) {
             afkTracker.stop();
         }
-        afkTracker = new AfkTracker(this, reportQueue, settings);
+        afkTracker = new AfkTracker(this, scheduler, reportQueue, settings);
         afkTracker.start();
 
         // The sensor follows the mode, so switching modes never leaves a stale channel registered.
@@ -164,8 +167,8 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
         if (inboundPoller == null) {
             inboundPoller = new InboundChatPoller(this);
         }
-        inboundPollTaskId = getServer().getScheduler().runTaskTimerAsynchronously(
-                this, (Runnable) () -> inboundPoller.poll(), 20L * 10L, settings.getChatBridge().getPollIntervalTicks()).getTaskId();
+        long intervalMs = Math.max(settings.getChatBridge().getPollIntervalTicks() * 50L, 1000L);
+        inboundPoller.start(10_000L, intervalMs);
         getLogger().info("群服互联入站已启动：server-id=" + settings.getServerId()
                 + " -> " + settings.getBaseUrl()
                 + "，实时推送优先，轮询兜底（间隔 " + (settings.getChatBridge().getPollIntervalTicks() / 20L) + " 秒），调试日志="
@@ -174,9 +177,8 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
     }
 
     private void stopInboundPoller() {
-        if (inboundPollTaskId >= 0) {
-            getServer().getScheduler().cancelTask(inboundPollTaskId);
-            inboundPollTaskId = -1;
+        if (inboundPoller != null) {
+            inboundPoller.stop();
             getLogger().info("群服互联入站已停止。");
         }
     }
@@ -362,6 +364,21 @@ public final class YudreamMinecraftPlugin extends JavaPlugin {
 
     public AfkTracker getAfkTracker() {
         return afkTracker;
+    }
+
+    /** Scheduler facade that works on both Bukkit/Spigot/Paper and Folia. */
+    public SchedulerCompat getSchedulerCompat() {
+        return scheduler;
+    }
+
+    /**
+     * Whether the modern {@code AsyncChatEvent} is registered.
+     *
+     * <p>On Paper 1.19+ and Folia both the modern and the legacy chat events fire; when the modern one
+     * is active the legacy handlers stay silent so a chat line is not forwarded twice.
+     */
+    public boolean isModernChatActive() {
+        return PaperChatCompatibility.isActive();
     }
 
     /** The active downstream sensor, or {@code null} in standalone mode. */

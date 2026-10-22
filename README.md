@@ -10,7 +10,7 @@ This repository contains five artifacts that share the same remote API:
 
 | Artifact / 产物 | Platform / 平台 | Target / 目标 |
 |---|---|---|
-| `yudream-minecraft-server-bukkit` | Bukkit / Spigot / Paper plugin | Compiled against Spigot 1.12.2 API, Java 8; runs on 1.8.8+. Two modes: standalone or proxy backend sensor |
+| `yudream-minecraft-server-bukkit` | Bukkit / Spigot / Paper / Folia plugin | Compiled against Spigot 1.12.2 API, Java 8; runs on 1.8.8+ and Folia. Two modes: standalone or proxy backend sensor |
 | `yudream_minecraft_server-forge-1.20.1` | Forge dedicated-server mod | Minecraft 1.20.1, Java 17 |
 | `yudream_minecraft_server-neoforge-1.21.1` | NeoForge dedicated-server mod | Minecraft 1.21.1, Java 21 |
 | `yudream-velocity` | Velocity proxy plugin | Velocity 3.5.x, Java 21 |
@@ -142,11 +142,11 @@ The API key needs `plugin:minecraft-server:report` for event reporting. `/yudrea
 
 上报事件需要 API Key 具备 `plugin:minecraft-server:report` 权限。`/yudreammc status` 还需要 `plugin:minecraft-server:manage`。
 
-## Bukkit / Spigot / Paper
+## Bukkit / Spigot / Paper / Folia
 
-Supported server API target: Bukkit/Spigot 1.8.8 and newer, including 1.12.2, 1.19, 1.20 and newer Paper/Spigot versions. The plugin is compiled against the 1.12.2 API but only uses Bukkit APIs already present in 1.8, and avoids NMS/version-specific APIs, so the same jar can run across old and modern servers.
+Supported server API target: Bukkit/Spigot 1.8.8 and newer, including 1.12.2, 1.19, 1.20 and newer Paper/Spigot versions, plus Folia. The plugin is compiled against the 1.12.2 API but only uses Bukkit APIs already present in 1.8, and avoids NMS/version-specific APIs, so the same jar can run across old and modern servers.
 
-支持 Bukkit/Spigot 1.8.8 及更新版本，包括 1.12.2、1.19、1.20 以及更新的 Paper/Spigot。插件按 1.12.2 API 编译，但只使用 1.8 已有的 Bukkit API，不依赖 NMS 或版本专用 API，因此同一个 jar 可以在新旧服务端上运行。
+支持 Bukkit/Spigot 1.8.8 及更新版本，包括 1.12.2、1.19、1.20 以及更新的 Paper/Spigot，同时支持 Folia。插件按 1.12.2 API 编译，但只使用 1.8 已有的 Bukkit API，不依赖 NMS 或版本专用 API，因此同一个 jar 可以在新旧服务端上运行。
 
 Runtime Java requirement follows the Minecraft server:
 
@@ -163,6 +163,12 @@ The plugin itself is compiled to Java 8 bytecode, so it can run on Java 8 and ne
 On Paper 1.19/1.20+, the plugin also registers Paper's modern `AsyncChatEvent` when it exists, while keeping Bukkit's legacy chat event for older servers.
 
 在 Paper 1.19/1.20+ 上，若存在 Paper 的 `AsyncChatEvent` 也会注册，同时保留旧版 Bukkit 聊天事件以兼容更早的服务端。
+
+### Folia / Folia 核心
+
+The same jar runs on Folia. Folia refuses to load plugins that do not declare support, so `plugin.yml` now sets `folia-supported: true`. Scheduling is routed through a compatibility layer: global work (player snapshots, AFK checks, heartbeats, broadcasts) uses the global region scheduler, player-specific work (plugin messages, chat/advancement reporting) runs on the owning player's region thread, and HTTP reporting stays on its own executor. The group-server inbound SSE loop runs on a dedicated daemon thread instead of the shared async scheduler, because a long-lived stream would otherwise occupy Folia's async pool. No separate Folia build is needed.
+
+同一个 jar 可直接运行在 Folia 上。Folia 会拒绝加载未声明支持的插件，因此 `plugin.yml` 已加入 `folia-supported: true`。调度统一走兼容层：全局任务（在线快照、挂机检测、心跳、广播）使用 global region 调度器；玩家相关任务（插件消息、聊天/成就上报）在玩家所属的 region 线程执行；HTTP 上报仍使用独立线程。群服互联的 SSE 长连接放在插件自己的守护线程上，避免长期占用 Folia 共享的 async 调度池。无需为 Folia 单独构建。
 
 ### Modes / 两种模式
 

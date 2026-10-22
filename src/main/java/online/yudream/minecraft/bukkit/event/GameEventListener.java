@@ -27,13 +27,14 @@ public final class GameEventListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onChat(AsyncPlayerChatEvent event) {
-        if (!plugin.getSettings().getChatBridge().isReportEvents()) {
+        if (!plugin.getSettings().getChatBridge().isReportEvents() || plugin.isModernChatActive()) {
+            // Paper/Folia also fire the modern AsyncChatEvent; that handler reports the line instead.
             return;
         }
         final Player player = event.getPlayer();
         final String message = event.getMessage();
-        // 聊天事件在异步线程触发；统一回主线程再入队，保持与活动信号一致的生命周期
-        plugin.getServer().getScheduler().runTask(plugin, new Runnable() {
+        // 聊天事件在异步线程触发；统一回到玩家所属线程再入队，Folia 下即该玩家所在的 region 线程
+        plugin.getSchedulerCompat().runFor(player, new Runnable() {
             @Override
             public void run() {
                 if (player.isOnline()) {
